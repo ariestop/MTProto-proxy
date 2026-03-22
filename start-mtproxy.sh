@@ -192,14 +192,14 @@ show_existing_container_info() {
   echo
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "📦 Найден существующий контейнер: ${CONTAINER_NAME}"
-  echo "📌 Статус: ${BLUE}${status}${NC}"
+  echo -e "📌 Статус: ${BLUE}${status}${NC}"
   if [[ -n "${port:-}" ]]; then
-    echo "🔌 Текущий порт (хост): ${BLUE}${port}${NC}"
+    echo -e "🔌 Текущий порт (хост): ${BLUE}${port}${NC}"
   else
-    echo "🔌 Текущий порт: ${YELLOW}не удалось определить${NC}"
+    echo -e "🔌 Текущий порт: ${YELLOW}не удалось определить${NC}"
   fi
   if [[ -f "$CONFIG_FILE" ]]; then
-    echo "📄 Сохранённый конфиг: ${BLUE}${CONFIG_FILE}${NC}"
+    echo -e "📄 Сохранённый конфиг: ${BLUE}${CONFIG_FILE}${NC}"
   fi
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo
@@ -269,7 +269,7 @@ show_status() {
   fi
   echo
   if [[ -f "$CONFIG_FILE" ]]; then
-    echo "📄 Конфигурация: ${BLUE}${CONFIG_FILE}${NC} (секреты — в пункте 5, с блоком для копирования)"
+    echo -e "📄 Конфигурация: ${BLUE}${CONFIG_FILE}${NC} (секреты — в пункте 5, с блоком для копирования)"
   else
     warn "Файл конфигурации ещё не создан"
   fi
@@ -372,9 +372,9 @@ install_proxy() {
   echo
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log "${YELLOW}Регистрация в @MTProxybot (secret — только серверный 32 hex, не ee...)${NC}"
-  echo "1. ${BLUE}/newproxy${NC}"
-  echo "2. Адрес: ${BLUE}${SERVER_IP}:${PORT}${NC}"
-  echo "3. Secret: ${BLUE}${SERVER_SECRET}${NC}"
+  echo -e "1. ${BLUE}/newproxy${NC}"
+  echo -e "2. Адрес: ${BLUE}${SERVER_IP}:${PORT}${NC}"
+  echo -e "3. Secret: ${BLUE}${SERVER_SECRET}${NC}"
   echo "4. При необходимости скопируйте TAG"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo

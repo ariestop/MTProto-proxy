@@ -493,6 +493,7 @@ install_proxy() {
     -p "${PORT}:443"
     -v "${DATA_VOLUME}:/data"
     -e "SECRET=${PROXY_SECRET}"
+    -e "EXTERNAL_IP=${SERVER_IP}"
   )
   [[ -n "${PROXY_TAG}" ]] && docker_args+=(-e "TAG=${PROXY_TAG}")
   docker_args+=("$DOCKER_IMAGE")

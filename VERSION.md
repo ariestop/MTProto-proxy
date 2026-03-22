@@ -1,10 +1,27 @@
-# Версионирование проекта mtproxy — **1.0.0**
+# Версионирование проекта mtproxy — **1.1.0**
 
 Формат: [Semantic Versioning](https://semver.org/lang/ru/) (`MAJOR.MINOR.PATCH`).
 
 | | |
 |--|--|
-| **Версия** | **1.0.0** |
+| **Версия** | **1.1.0** |
+
+---
+
+## 1.1.0 — 2026-03-22
+
+### `docker-mtproxy/entrypoint.sh`
+
+- Добавлен **`--nat-info`**: entrypoint определяет внутренний IP контейнера и внешний IP сервера (из env `EXTERNAL_IP` или через curl) и передаёт `--nat-info <internal>:<external>` бинарнику `mtproto-proxy`. Без этого флага прокси за Docker NAT сообщал Telegram внутренний адрес (`172.17.0.x`), из-за чего клиенты подключались, но не могли обмениваться данными.
+- Воркеры по умолчанию **2** (было 1); переопределяется через `WORKERS=N`.
+
+### `start-mtproxy.sh`
+
+- При запуске контейнера передаётся `-e EXTERNAL_IP=${SERVER_IP}`, чтобы entrypoint не тратил время на определение IP через curl.
+
+### Документация
+
+- **README.md**: пункт про `--nat-info` / Docker NAT в разделе «Устранение неполадок»; пункт про `nf_conntrack` table full.
 
 ---
 

@@ -278,8 +278,32 @@ show_status() {
 show_logs() {
   ensure_dependencies
   echo
-  echo "📋 Последние логи контейнера:"
-  sudo docker logs --tail 30 "$CONTAINER_NAME" 2>/dev/null || warn "Логи недоступны (контейнер отсутствует?)"
+  echo "📋 Последние логи: ${CONTAINER_NAME}"
+  if ! container_exists; then
+    warn "Контейнер не найден (см. docker ps -a)."
+    echo
+    return 0
+  fi
+  local _lf
+  _lf=$(mktemp) || {
+    warn "Не удалось создать временный файл; вывод без проверки на пустоту."
+    sudo docker logs -t --tail 100 "$CONTAINER_NAME" 2>&1 || warn "docker logs завершился с ошибкой."
+    echo
+    return 0
+  }
+  if sudo docker logs -t --tail 100 "$CONTAINER_NAME" >"$_lf" 2>&1; then
+    if [[ ! -s "$_lf" ]]; then
+      echo "(В журнале Docker нет строк — редко для mtproxy; проверьте драйвер логов.)"
+      echo "Вручную: sudo docker logs -t --tail 200 ${CONTAINER_NAME}"
+      echo "Поток:     sudo docker logs -f ${CONTAINER_NAME}"
+    else
+      cat "$_lf"
+    fi
+  else
+    warn "Ошибка docker logs:"
+    cat "$_lf"
+  fi
+  rm -f "$_lf"
   echo
 }
 

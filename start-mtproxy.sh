@@ -136,11 +136,10 @@ save_config() {
   cat >"$CONFIG_FILE" <<EOF
 SERVER=${SERVER_IP}
 PORT=${PORT}
-SERVER_SECRET=${SERVER_SECRET}
-CLIENT_SECRET=${CLIENT_SECRET}
+SECRET=${PROXY_SECRET}
 DOMAIN=${FAKE_DOMAIN}
 TAG=${PROXY_TAG}
-LINK=tg://proxy?server=${SERVER_IP}&port=${PORT}&secret=${CLIENT_SECRET}
+LINK=tg://proxy?server=${SERVER_IP}&port=${PORT}&secret=${PROXY_SECRET}
 IMAGE=${DOCKER_IMAGE}
 EOF
   chmod 600 "$CONFIG_FILE" 2>/dev/null || true
@@ -148,9 +147,9 @@ EOF
 
 # Значения без цвета на отдельных строках — удобно выделить мышью / двойной клик
 emit_copy_block() {
-  local server_ip="$1" port="$2" server_secret="$3" client_secret="$4" domain="$5"
-  local tag="${6:-}"
-  local link="tg://proxy?server=${server_ip}&port=${port}&secret=${client_secret}"
+  local server_ip="$1" port="$2" secret="$3" domain="$4"
+  local tag="${5:-}"
+  local link="tg://proxy?server=${server_ip}&port=${port}&secret=${secret}"
 
   echo
   echo "═══════════════════════════════════════════════════════════"
@@ -158,10 +157,8 @@ emit_copy_block() {
   echo "═══════════════════════════════════════════════════════════"
   echo "Адрес для @MTProxybot (одна строка):"
   printf '%s\n\n' "${server_ip}:${port}"
-  echo "Серверный secret для бота (32 hex, не ee...):"
-  printf '%s\n\n' "${server_secret}"
-  echo "Клиентский Fake TLS secret (для Telegram):"
-  printf '%s\n\n' "${client_secret}"
+  echo "Secret (одна строка для бота, Docker и Telegram):"
+  printf '%s\n\n' "${secret}"
   echo "Домен Fake TLS:"
   printf '%s\n\n' "${domain}"
   if [[ -n "${tag}" ]]; then
@@ -227,17 +224,17 @@ ask_for_free_port() {
 
 show_connection_data() {
   [[ -f "$CONFIG_FILE" ]] || fail "Файл конфигурации не найден: $CONFIG_FILE"
-  local SERVER PORT_OUT SERVER_SECRET_OUT CLIENT_SECRET_OUT DOMAIN_OUT TAG_OUT LINK_OUT
+  local SERVER PORT_OUT SECRET_OUT DOMAIN_OUT TAG_OUT LINK_OUT
   SERVER=$(cfg_get SERVER)
   PORT_OUT=$(cfg_get PORT)
-  SERVER_SECRET_OUT=$(cfg_get SERVER_SECRET)
-  CLIENT_SECRET_OUT=$(cfg_get CLIENT_SECRET)
+  SECRET_OUT=$(cfg_get SECRET)
+  [[ -n "$SECRET_OUT" ]] || SECRET_OUT=$(cfg_get CLIENT_SECRET)
   DOMAIN_OUT=$(cfg_get DOMAIN)
   TAG_OUT=$(cfg_get TAG)
   LINK_OUT=$(cfg_get LINK)
-  [[ -n "$SERVER" && -n "$PORT_OUT" && -n "$CLIENT_SECRET_OUT" ]] || fail "В конфиге не хватает полей (SERVER, PORT, CLIENT_SECRET)."
+  [[ -n "$SERVER" && -n "$PORT_OUT" && -n "$SECRET_OUT" ]] || fail "В конфиге не хватает полей (SERVER, PORT, SECRET или CLIENT_SECRET)."
   if [[ -z "$LINK_OUT" ]]; then
-    LINK_OUT="tg://proxy?server=${SERVER}&port=${PORT_OUT}&secret=${CLIENT_SECRET_OUT}"
+    LINK_OUT="tg://proxy?server=${SERVER}&port=${PORT_OUT}&secret=${SECRET_OUT}"
   fi
 
   echo
@@ -245,14 +242,13 @@ show_connection_data() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo -e "🌐 Сервер: ${BLUE}${SERVER}${NC}"
   echo -e "🔌 Порт: ${BLUE}${PORT_OUT}${NC}"
-  echo -e "🔑 Серверный secret: ${YELLOW}${SERVER_SECRET_OUT}${NC}"
-  echo -e "🔐 Клиентский secret: ${YELLOW}${CLIENT_SECRET_OUT}${NC}"
+  echo -e "🔑 Secret: ${YELLOW}${SECRET_OUT}${NC}"
   echo -e "🌐 Fake TLS домен: ${BLUE}${DOMAIN_OUT}${NC}"
   [[ -n "$TAG_OUT" ]] && echo -e "🏷️ TAG: ${YELLOW}${TAG_OUT}${NC}"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo -e "🔗 Ссылка: ${GREEN}${LINK_OUT}${NC}"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  emit_copy_block "$SERVER" "$PORT_OUT" "$SERVER_SECRET_OUT" "$CLIENT_SECRET_OUT" "$DOMAIN_OUT" "$TAG_OUT"
+  emit_copy_block "$SERVER" "$PORT_OUT" "$SECRET_OUT" "$DOMAIN_OUT" "$TAG_OUT"
 }
 
 show_status() {
@@ -381,23 +377,29 @@ install_proxy() {
   is_valid_fake_domain "$FAKE_DOMAIN" || fail "Некорректное имя домена."
   log "📌 Домен: ${BLUE}${FAKE_DOMAIN}${NC}"
 
-  DOMAIN_HEX="$(printf '%s' "$FAKE_DOMAIN" | xxd -ps -c 999 | tr -d '\n')"
+  DOMAIN_HEX="$(printf '%s' "$FAKE_DOMAIN" | xxd -ps -c 999 | tr -d '\n' | tr '[:upper:]' '[:lower:]')"
   [[ -n "$DOMAIN_HEX" ]] || fail "Не удалось закодировать домен."
+  local DOMAIN_LEN NEEDED FULLRAND RANDOM_HEX
+  DOMAIN_LEN=${#DOMAIN_HEX}
+  if (( DOMAIN_LEN > 30 )); then
+    fail "Домен в hex слишком длинный (${DOMAIN_LEN} символов, максимум 30). Укоротите домен Fake TLS."
+  fi
+  NEEDED=$((30 - DOMAIN_LEN))
 
-  log -n "🔑 Генерация secret... "
-  SERVER_SECRET="$(openssl rand -hex 16 | tr '[:upper:]' '[:lower:]')"
-  CLIENT_SECRET="ee${SERVER_SECRET}${DOMAIN_HEX}"
+  log -n "🔑 Генерация Fake TLS secret... "
+  FULLRAND="$(openssl rand -hex 16 | tr '[:upper:]' '[:lower:]')"
+  RANDOM_HEX="${FULLRAND:0:NEEDED}"
+  PROXY_SECRET="ee${DOMAIN_HEX}${RANDOM_HEX}"
   log "${GREEN}готово${NC}"
-  echo -e "   Серверный secret: ${YELLOW}${SERVER_SECRET}${NC}"
-  echo -e "   Клиентский secret: ${YELLOW}${CLIENT_SECRET}${NC}"
-  emit_copy_block "$SERVER_IP" "$PORT" "$SERVER_SECRET" "$CLIENT_SECRET" "$FAKE_DOMAIN" ""
+  echo -e "   Secret: ${YELLOW}${PROXY_SECRET}${NC}"
+  emit_copy_block "$SERVER_IP" "$PORT" "$PROXY_SECRET" "$FAKE_DOMAIN" ""
 
   echo
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  log "${YELLOW}Регистрация в @MTProxybot (secret — только серверный 32 hex, не ee...)${NC}"
+  log "${YELLOW}Регистрация в @MTProxybot (тот же secret, что в Docker и в ссылке)${NC}"
   echo -e "1. ${BLUE}/newproxy${NC}"
   echo -e "2. Адрес: ${BLUE}${SERVER_IP}:${PORT}${NC}"
-  echo -e "3. Secret: ${BLUE}${SERVER_SECRET}${NC}"
+  echo -e "3. Secret: ${BLUE}${PROXY_SECRET}${NC}"
   echo "4. При необходимости скопируйте TAG"
   log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo
@@ -414,7 +416,7 @@ install_proxy() {
     --restart unless-stopped
     -p "${PORT}:443"
     -v "${DATA_VOLUME}:/data"
-    -e "SECRET=${SERVER_SECRET}"
+    -e "SECRET=${PROXY_SECRET}"
   )
   [[ -n "${PROXY_TAG}" ]] && docker_args+=(-e "TAG=${PROXY_TAG}")
   docker_args+=("$DOCKER_IMAGE")
@@ -440,14 +442,13 @@ install_proxy() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo -e "🌐 Сервер: ${BLUE}${SERVER_IP}${NC}"
   echo -e "🔌 Порт: ${BLUE}${PORT}${NC}"
-  echo -e "🔑 Серверный secret: ${YELLOW}${SERVER_SECRET}${NC}"
-  echo -e "🔐 Клиентский secret: ${YELLOW}${CLIENT_SECRET}${NC}"
+  echo -e "🔑 Secret: ${YELLOW}${PROXY_SECRET}${NC}"
   echo -e "🌐 Fake TLS домен: ${BLUE}${FAKE_DOMAIN}${NC}"
   [[ -n "${PROXY_TAG}" ]] && echo -e "🏷️ TAG: ${YELLOW}${PROXY_TAG}${NC}"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo -e "🔗 Ссылка: ${GREEN}tg://proxy?server=${SERVER_IP}&port=${PORT}&secret=${CLIENT_SECRET}${NC}"
+  echo -e "🔗 Ссылка: ${GREEN}tg://proxy?server=${SERVER_IP}&port=${PORT}&secret=${PROXY_SECRET}${NC}"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  emit_copy_block "$SERVER_IP" "$PORT" "$SERVER_SECRET" "$CLIENT_SECRET" "$FAKE_DOMAIN" "${PROXY_TAG:-}"
+  emit_copy_block "$SERVER_IP" "$PORT" "$PROXY_SECRET" "$FAKE_DOMAIN" "${PROXY_TAG:-}"
   echo "✅ Конфигурация: ${CONFIG_FILE} (права 600)"
   show_logs
 }

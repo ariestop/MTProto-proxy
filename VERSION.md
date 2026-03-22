@@ -14,8 +14,8 @@
 
 ### `start-mtproxy.sh`
 
-- Интерактивное **меню**: установка/переустановка, перезапуск, остановка, удаление, данные подключения, статус, логи (до 100 строк, подсказка `docker logs -f`).
-- Образ Docker по умолчанию: **`telegrammessenger/proxy:latest`**; локальная сборка — `./install-mtproxy.sh`, запуск с **`DOCKER_IMAGE=local/mtproxy:latest`**.
+- Интерактивное **меню**: установка/переустановка, перезапуск, остановка, удаление, данные подключения, статус, логи (до 100 строк, подсказка `docker logs -f`), **п. 8** — выбор образа Docker (Hub / **`local/mtproxy:latest`**), сохранение в **`~/.mtproxy_docker_image`** и синхронизация **`IMAGE=`** в конфиге.
+- Образ по умолчанию: **`telegrammessenger/proxy:latest`**; приоритет: **`DOCKER_IMAGE`** в окружении → файл предпочтений → **`IMAGE=`** в конфиге → Hub.
 - Fake TLS secret: **`ee`** + hex(домен) + случайный hex, всего **30** hex-символов после **`ee`**; **одна** строка в Docker `SECRET`, @MTProxybot и `tg://proxy`; домен в hex не длиннее 30 символов.
 - Конфиг **`~/mtproto_config.txt`**: `SERVER`, `PORT`, `SECRET`, `DOMAIN`, `TAG`, `LINK`, `IMAGE`; чтение без `source`; пункт «Данные» подхватывает старый **`CLIENT_SECRET`**, если нет **`SECRET`**.
 - Авто-IP `https://ifconfig.me/ip`, выбор порта 443 / 8443–8445, проверка занятости `ss`/`lsof`, том **`mtproxy-data:/data`**, `set -Eeuo pipefail`, блок копирования без ANSI.

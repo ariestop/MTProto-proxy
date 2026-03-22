@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# По умолчанию — образ с Docker Hub (как в первоначальной версии скрипта).
-# Свежая сборка из исходников: DOCKER_IMAGE=local/mtproxy:latest ./start-mtproxy.sh (см. ./install-mtproxy.sh)
+# Образ: пункт меню 8 или ~/.mtproxy_docker_image; иначе DOCKER_IMAGE из окружения.
+# Переопределение разово: DOCKER_IMAGE=local/mtproxy:latest ./start-mtproxy.sh (см. ./install-mtproxy.sh)
 set -Eeuo pipefail
 
 GREEN='\033[0;32m'
@@ -10,10 +10,22 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 CONTAINER_NAME="mtproto-proxy"
-DOCKER_IMAGE="${DOCKER_IMAGE:-telegrammessenger/proxy:latest}"
 CONFIG_FILE="${HOME}/mtproto_config.txt"
+PREF_IMAGE_FILE="${HOME}/.mtproxy_docker_image"
 DATA_VOLUME="mtproxy-data"
 DEFAULT_DOMAIN="ya.ru"
+
+# Приоритет: переменная окружения DOCKER_IMAGE → ~/.mtproxy_docker_image → IMAGE= в конфиге → Hub
+if [[ -z "${DOCKER_IMAGE:-}" ]]; then
+  _img_saved=""
+  if [[ -f "$PREF_IMAGE_FILE" ]]; then
+    _img_saved="$(head -n1 "$PREF_IMAGE_FILE" | tr -d '\r\n')"
+  elif [[ -f "$CONFIG_FILE" ]]; then
+    _img_saved="$(grep -m1 '^IMAGE=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2-)"
+  fi
+  DOCKER_IMAGE="${_img_saved:-telegrammessenger/proxy:latest}"
+  unset _img_saved
+fi
 
 log() {
   if [[ "${1:-}" == "-n" ]]; then
@@ -143,6 +155,69 @@ LINK=tg://proxy?server=${SERVER_IP}&port=${PORT}&secret=${PROXY_SECRET}
 IMAGE=${DOCKER_IMAGE}
 EOF
   chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+  persist_docker_image_pref
+}
+
+persist_docker_image_pref() {
+  umask 077
+  printf '%s\n' "$DOCKER_IMAGE" >"$PREF_IMAGE_FILE"
+  chmod 600 "$PREF_IMAGE_FILE" 2>/dev/null || true
+}
+
+update_config_image_line() {
+  local new_img="$1"
+  [[ -f "$CONFIG_FILE" ]] || return 0
+  local tmp
+  tmp=$(mktemp) || return 0
+  if grep -q '^IMAGE=' "$CONFIG_FILE" 2>/dev/null; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" =~ ^IMAGE= ]]; then
+        echo "IMAGE=${new_img}"
+      else
+        printf '%s\n' "$line"
+      fi
+    done <"$CONFIG_FILE" >"$tmp"
+    mv "$tmp" "$CONFIG_FILE"
+  else
+    rm -f "$tmp"
+    echo "IMAGE=${new_img}" >>"$CONFIG_FILE"
+  fi
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+}
+
+choose_docker_image() {
+  ensure_dependencies
+  echo
+  log "🐳 Образ Docker для следующей установки прокси"
+  echo -e "Сейчас выбрано: ${BLUE}${DOCKER_IMAGE}${NC}"
+  echo
+  echo "  1) Docker Hub — telegrammessenger/proxy:latest"
+  echo "  2) Локальная сборка — local/mtproxy:latest (сначала: ./install-mtproxy.sh)"
+  echo "  0) Назад без изменений"
+  echo
+  read -r -p "Выбор: " img_choice
+  case "$img_choice" in
+    1)
+      DOCKER_IMAGE="telegrammessenger/proxy:latest"
+      ;;
+    2)
+      DOCKER_IMAGE="local/mtproxy:latest"
+      ;;
+    0 | "")
+      echo
+      return 0
+      ;;
+    *)
+      warn "Неверный выбор"
+      echo
+      return 0
+      ;;
+  esac
+  persist_docker_image_pref
+  update_config_image_line "$DOCKER_IMAGE"
+  ok "Сохранено: ${DOCKER_IMAGE}"
+  echo -e "Файл настроек: ${BLUE}${PREF_IMAGE_FILE}${NC}"
+  echo
 }
 
 # Значения без цвета на отдельных строках — удобно выделить мышью / двойной клик
@@ -268,6 +343,7 @@ show_status() {
   else
     warn "Файл конфигурации ещё не создан"
   fi
+  echo -e "🐳 Образ Docker: ${BLUE}${DOCKER_IMAGE}${NC}"
   echo
 }
 
@@ -517,6 +593,7 @@ show_menu() {
   echo "5) Данные для подключения"
   echo "6) Статус"
   echo "7) Логи"
+  echo "8) Образ Docker (Hub / локальная сборка)"
   echo "0) Выход"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
@@ -533,6 +610,7 @@ main() {
       5) show_connection_data ;;
       6) show_status ;;
       7) show_logs ;;
+      8) choose_docker_image ;;
       0)
         echo "Выход."
         exit 0

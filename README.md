@@ -53,7 +53,7 @@ gunzip -c mtproxy-image.tar.gz | docker load
 ./start-mtproxy.sh
 ```
 
-Образ **`telegrammessenger/proxy:latest`** подтянется с Docker Hub при первом запуске. Чтобы использовать **локально собранный** образ: сначала `./install-mtproxy.sh`, затем `DOCKER_IMAGE=local/mtproxy:latest ./start-mtproxy.sh`.
+При первом запуске образ по умолчанию — **`telegrammessenger/proxy:latest`** (Docker Hub). Выбор **Hub** или **локальной сборки** — пункт меню **8**; выбор сохраняется в **`~/.mtproxy_docker_image`** и (если есть) обновляет `IMAGE=` в `~/mtproto_config.txt`. Переменная окружения **`DOCKER_IMAGE`** при старте скрипта имеет приоритет над этим файлом.
 
 Откроется меню:
 
@@ -64,8 +64,9 @@ gunzip -c mtproxy-image.tar.gz | docker load
 | 3 | Остановка |
 | 4 | Удаление контейнера (опционально — удаление `mtproto_config.txt`) |
 | 5 | Данные подключения из конфига + блок **без цветов** для копирования строк |
-| 6 | Статус контейнера и наличие файла конфигурации (секреты в консоль не дублируются) |
+| 6 | Статус контейнера, конфигурация и **текущий образ Docker** |
 | 7 | Последние строки логов Docker |
+| 8 | Образ Docker: Hub (`telegrammessenger/proxy:latest`) или локальный (`local/mtproxy:latest`) |
 | 0 | Выход |
 
 При **установке (п. 1)** скрипт последовательно запросит:
@@ -77,15 +78,14 @@ gunzip -c mtproxy-image.tar.gz | docker load
 
 ### Docker-образ
 
-По умолчанию **`start-mtproxy.sh`** использует **`telegrammessenger/proxy:latest`** с Docker Hub (как в первой версии сценария).
-
-Локальная сборка из GitHub (`./install-mtproxy.sh`), затем:
+- **Пункт меню 8** — переключение между **`telegrammessenger/proxy:latest`** (Hub) и **`local/mtproxy:latest`** (сборка из [MTProxy](https://github.com/TelegramMessenger/MTProxy) через `./install-mtproxy.sh`).
+- Без меню: однократно задать образ при запуске:
 
 ```bash
 DOCKER_IMAGE=local/mtproxy:latest ./start-mtproxy.sh
 ```
 
-Свой реестр:
+Свой реестр (приоритет у переменной окружения):
 
 ```bash
 DOCKER_IMAGE=registry.example.com/mtproxy:stable ./start-mtproxy.sh

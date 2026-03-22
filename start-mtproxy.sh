@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Образ telegrammessenger/proxy на Docker Hub давно не обновлялся; при необходимости
-# соберите свой из официального исходника или укажите другой тег:
-#   DOCKER_IMAGE=your/mtproxy:latest ./start-mtproxy.sh
+# По умолчанию — локально собранный образ (см. ./install-mtproxy.sh).
+# Образ с Docker Hub (устаревший): DOCKER_IMAGE=telegrammessenger/proxy:latest ./start-mtproxy.sh
 set -Eeuo pipefail
 
 GREEN='\033[0;32m'
@@ -11,7 +10,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 CONTAINER_NAME="mtproto-proxy"
-DOCKER_IMAGE="${DOCKER_IMAGE:-telegrammessenger/proxy:latest}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-local/mtproxy:latest}"
 CONFIG_FILE="${HOME}/mtproto_config.txt"
 DATA_VOLUME="mtproxy-data"
 DEFAULT_DOMAIN="ya.ru"

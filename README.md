@@ -49,6 +49,8 @@ gunzip -c mtproxy-image.tar.gz | docker load
 
 ## Запуск
 
+Сначала соберите образ (**обязательно** для значения по умолчанию `local/mtproxy:latest`), если его ещё нет: `./install-mtproxy.sh`.
+
 ```bash
 ./start-mtproxy.sh
 ```
@@ -73,9 +75,18 @@ gunzip -c mtproxy-image.tar.gz | docker load
 3. **Домен Fake TLS** — по умолчанию `ya.ru` (клиентский секрет).
 4. Инструкции для **@MTProxybot** и ввод **TAG** (32 hex или пусто).
 
-### Другой Docker-образ
+### Docker-образ
 
-По умолчанию: `telegrammessenger/proxy:latest`. Образ на Docker Hub давно не обновлялся; при желании укажите свой:
+По умолчанию **`start-mtproxy.sh`** использует **локальный** образ **`local/mtproxy:latest`**. Его нужно один раз собрать:
+
+```bash
+./install-mtproxy.sh
+```
+
+Старый образ с Hub (не рекомендуется, без свежего Fake TLS):  
+`DOCKER_IMAGE=telegrammessenger/proxy:latest ./start-mtproxy.sh`
+
+Свой реестр:
 
 ```bash
 DOCKER_IMAGE=registry.example.com/mtproxy:stable ./start-mtproxy.sh
@@ -107,7 +118,7 @@ sudo docker restart mtproto-proxy
 sudo docker stop mtproto-proxy
 ```
 
-Имя контейнера: **`mtproto-proxy`**. Именованный том **`mtproxy-data`:**`/data` задаётся для совместимости с образом Hub; в **самособранном** образе из `install-mtproxy.sh` конфиги подгружаются в `/var/lib/mtproxy` при каждом запуске, каталог `/data` может оставаться пустым.
+Имя контейнера: **`mtproto-proxy`**. Том **`mtproxy-data`:**`/data` монтируется для единообразия; в образе из **`install-mtproxy.sh`** данные прокси лежат в **`/var/lib/mtproxy`** внутри контейнера, `/data` может быть пустым.
 
 ## Устранение неполадок
 

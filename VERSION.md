@@ -4,6 +4,13 @@
 
 ---
 
+## 1.3.0 — 2026-03-22
+
+- **`start-mtproxy.sh`**: образ по умолчанию **`local/mtproxy:latest`** (сборка `./install-mtproxy.sh`); Hub `telegrammessenger/proxy:latest` — только через `DOCKER_IMAGE=...`.
+- **`README.md`**: обновлена секция про Docker-образ.
+
+---
+
 ## 1.2.0 — 2026-03-22
 
 - **`install-mtproxy.sh`**: сборка Docker-образа из официального [MTProxy](https://github.com/TelegramMessenger/MTProxy) (git clone + `make` внутри multi-stage `Dockerfile`), опционально `docker save | gzip`, предложение запустить `start-mtproxy.sh` с `DOCKER_IMAGE`.

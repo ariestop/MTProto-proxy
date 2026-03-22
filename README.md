@@ -21,9 +21,9 @@ chmod +x start-mtproxy.sh
 
 Дополнительных зависимостей (Python, Node и т.д.) нет.
 
-### Сборка своего образа из исходников GitHub
+### Сборка своего образа из исходников GitHub (опционально)
 
-Репозиторий [TelegramMessenger/MTProxy](https://github.com/TelegramMessenger/MTProxy) содержит актуальный исходный код; [официальный README](https://github.com/TelegramMessenger/MTProxy/blob/master/README.md) отмечает, что образ на Docker Hub устарел. Чтобы собрать бинарник внутри Docker и получить переносимый образ:
+По умолчанию **`start-mtproxy.sh`** тянет **`telegrammessenger/proxy:latest`** с Docker Hub. Если нужен бинарник с ветки `master` (другая версия `mtproto-proxy`, см. [README MTProxy](https://github.com/TelegramMessenger/MTProxy/blob/master/README.md)), соберите локальный образ:
 
 ```bash
 chmod +x install-mtproxy.sh
@@ -49,11 +49,11 @@ gunzip -c mtproxy-image.tar.gz | docker load
 
 ## Запуск
 
-Сначала соберите образ (**обязательно** для значения по умолчанию `local/mtproxy:latest`), если его ещё нет: `./install-mtproxy.sh`.
-
 ```bash
 ./start-mtproxy.sh
 ```
+
+Образ **`telegrammessenger/proxy:latest`** подтянется с Docker Hub при первом запуске. Чтобы использовать **локально собранный** образ: сначала `./install-mtproxy.sh`, затем `DOCKER_IMAGE=local/mtproxy:latest ./start-mtproxy.sh`.
 
 Откроется меню:
 
@@ -77,14 +77,13 @@ gunzip -c mtproxy-image.tar.gz | docker load
 
 ### Docker-образ
 
-По умолчанию **`start-mtproxy.sh`** использует **локальный** образ **`local/mtproxy:latest`**. Его нужно один раз собрать:
+По умолчанию **`start-mtproxy.sh`** использует **`telegrammessenger/proxy:latest`** с Docker Hub (как в первой версии сценария).
+
+Локальная сборка из GitHub (`./install-mtproxy.sh`), затем:
 
 ```bash
-./install-mtproxy.sh
+DOCKER_IMAGE=local/mtproxy:latest ./start-mtproxy.sh
 ```
-
-Старый образ с Hub (не рекомендуется, без свежего Fake TLS):  
-`DOCKER_IMAGE=telegrammessenger/proxy:latest ./start-mtproxy.sh`
 
 Свой реестр:
 

@@ -10,7 +10,10 @@ cd "$WORKDIR"
 curl -fsSL --max-time 60 https://core.telegram.org/getProxySecret -o proxy-secret
 curl -fsSL --max-time 60 https://core.telegram.org/getProxyConfig -o proxy-multi.conf
 
-# Как в README MTProxy: локальный порт статистики, -H — порт для клиентов (в контейнере 443)
+# Бинарник и воркеры переключаются на пользователя mtproxy (создаётся в Dockerfile)
+chown mtproxy:mtproxy proxy-secret proxy-multi.conf
+
+# Как в README MTProxy: -p статистика, -H порт клиентов (443 в контейнере)
 ARGS=( -p 8888 -H 443 -S "${SECRET}" --aes-pwd proxy-secret proxy-multi.conf -M 1 )
 if [[ -n "${TAG:-}" ]]; then
   ARGS+=( -P "${TAG}" )

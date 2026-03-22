@@ -27,7 +27,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     zlib1g \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --no-log-init --home /var/lib/mtproxy --shell /usr/sbin/nologin mtproxy \
+    && mkdir -p /var/lib/mtproxy \
+    && chown mtproxy:mtproxy /var/lib/mtproxy
 
 COPY --from=builder /build/objs/bin/mtproto-proxy /usr/local/bin/mtproto-proxy
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

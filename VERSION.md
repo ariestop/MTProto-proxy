@@ -4,6 +4,19 @@
 
 ---
 
+## 1.3.2 — 2026-03-22
+
+- **`docker-mtproxy/Dockerfile`**: пользователь **`mtproxy`**, права на `/var/lib/mtproxy` — воркеры mtproxy-0.02 требуют эту учётку; `-u nobody` недостаточно.
+- **`docker-mtproxy/entrypoint.sh`**: `chown mtproxy:mtproxy` для конфигов, без `-u nobody`.
+
+---
+
+## 1.3.1 — 2026-03-22
+
+- **`docker-mtproxy/entrypoint.sh`**: **`-u nobody`**, `chown nobody:nogroup` для `proxy-secret` / `proxy-multi.conf` — устраняет `can't find the user mtproxy` / `fatal: cannot change user to (none)` на актуальном `mtproto-proxy`.
+
+---
+
 ## 1.3.0 — 2026-03-22
 
 - **`start-mtproxy.sh`**: образ по умолчанию **`local/mtproxy:latest`** (сборка `./install-mtproxy.sh`); Hub `telegrammessenger/proxy:latest` — только через `DOCKER_IMAGE=...`.

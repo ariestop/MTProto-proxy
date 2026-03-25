@@ -127,6 +127,8 @@ DOCKER_IMAGE=registry.example.com/mtproxy:stable ./start-mtproxy.sh
 
 **Зависимости:** пакет **conntrack-tools** (`conntrack`), загруженный **nf_conntrack**. Если `conntrack -E` требует прав root, запускайте сборщик в среде, где эти права есть (или настройте доступ к netlink — по политике вашей ОС).
 
+**Пути под sudo:** у `sudo` по умолчанию `HOME=/root`. Скрипт при запуске от root, вызванном через `sudo`, если в домашнем каталоге **вызвавшего** пользователя есть `mtproto_config.txt`, использует **`~/.mtproxy_stats/` того же пользователя** — тогда `./stats-mtproxy.sh report` без sudo и `sudo ./stats-mtproxy.sh start` согласованы. Иначе задайте явно: `MTPROXY_CONFIG_FILE` и `MTPROXY_STATS_DIR`.
+
 ```bash
 chmod +x stats-mtproxy.sh
 ./stats-mtproxy.sh start    # фон, лог ~/.mtproxy_stats/collector.log

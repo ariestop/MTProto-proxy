@@ -2,8 +2,22 @@
 # Сбор статистики по TCP к порту прокси на хосте (conntrack).
 set -euo pipefail
 
-CONFIG_FILE="${HOME}/mtproto_config.txt"
-STATEDIR="${HOME}/.mtproxy_stats"
+# Явный переопределение (например под sudo):
+#   MTPROXY_CONFIG_FILE=/home/user/mtproto_config.txt
+#   MTPROXY_STATS_DIR=/home/user/.mtproxy_stats
+CONFIG_FILE="${MTPROXY_CONFIG_FILE:-${HOME}/mtproto_config.txt}"
+STATEDIR="${MTPROXY_STATS_DIR:-${HOME}/.mtproxy_stats}"
+
+# Под sudo HOME=/root: кладём данные в домашний каталог того, кто вызвал sudo (если там конфиг прокси)
+if [[ -z "${MTPROXY_CONFIG_FILE:-}" && -z "${MTPROXY_STATS_DIR:-}" ]] &&
+  [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_UID:-}" ]]; then
+  _inv_home="$(getent passwd "$SUDO_UID" | cut -d: -f6)"
+  if [[ -n "$_inv_home" && -f "$_inv_home/mtproto_config.txt" ]]; then
+    CONFIG_FILE="$_inv_home/mtproto_config.txt"
+    STATEDIR="$_inv_home/.mtproxy_stats"
+  fi
+fi
+
 SESSIONS_FILE="${STATEDIR}/sessions.tsv"
 PID_FILE="${STATEDIR}/collector.pid"
 
@@ -14,6 +28,7 @@ usage() {
   echo "  start   — фон, лог ${STATEDIR}/collector.log"
   echo "  stop    — остановить фоновый сборщик"
   echo "  status  — запущен ли сборщик"
+  echo "Опционально: MTPROXY_CONFIG_FILE, MTPROXY_STATS_DIR (если пути не совпадают с HOME)."
   exit "${1:-0}"
 }
 
@@ -117,7 +132,11 @@ collect_wrapper() {
   proxy_port="$(get_proxy_port)"
   ensure_statedir
   command -v conntrack >/dev/null 2>&1 || {
-    echo "Нужна команда conntrack (пакет conntrack-tools), модуль nf_conntrack." >&2
+    echo "Не найдена команда conntrack. Установите пакет и при необходимости загрузите модуль ядра:" >&2
+    echo "  Debian/Ubuntu: sudo apt update && sudo apt install -y conntrack" >&2
+    echo "  Fedora/RHEL:   sudo dnf install -y conntrack-tools   # или: yum install conntrack-tools" >&2
+    echo "  Модуль:        sudo modprobe nf_conntrack 2>/dev/null; lsmod | grep nf_conntrack" >&2
+    echo "  События conntrack часто требуют root: sudo $0 collect" >&2
     exit 1
   }
   echo "[stats-mtproxy] Порт хоста: ${proxy_port}. Пишем сессии в ${SESSIONS_FILE}" >&2
@@ -203,8 +222,10 @@ report_main() {
   if [[ ! -s "$SESSIONS_FILE" ]]; then
     echo ""
     echo "Пока нет записей в ${SESSIONS_FILE}."
-    echo "На Linux-сервере: chmod +x stats-mtproxy.sh && ./stats-mtproxy.sh start"
-    echo "Нужны conntrack-tools; учёт с момента запуска сборщика."
+    echo "Запустите сборщик (conntrack-tools), с теми же путями, что и отчёт:"
+    echo "  ./stats-mtproxy.sh start   или   sudo ./stats-mtproxy.sh start"
+    echo "(под sudo данные пишутся в домашний каталог пользователя, если есть ~/mtproto_config.txt)."
+    echo "Если ранее запускали только sudo без этого поведения — остановите старый процесс и запустите start заново."
     collector_status || true
     echo ""
     return 0

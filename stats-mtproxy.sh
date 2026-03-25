@@ -209,6 +209,9 @@ collect_wrapper() {
   local proxy_port line
   proxy_port="$(get_proxy_port)"
   ensure_statedir
+  # Если сборщик завершится (ошибка, сигнал, OOM-kill и т.п.), запишем причину в лог.
+  # Это особенно важно при запуске через start (nohup), где иначе видно только «процесс умер».
+  trap 'rc=$?; echo "[stats-mtproxy] Сборщик завершился: rc=${rc}, line=${BASH_LINENO[0]}, cmd=${BASH_COMMAND}" >&2' EXIT
   command -v conntrack >/dev/null 2>&1 || {
     echo "Команда conntrack не найдена. Установите пакет и при необходимости загрузите модуль ядра:" >&2
     echo "  Debian/Ubuntu: sudo apt update && sudo apt install -y conntrack" >&2

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # РЎР±РѕСЂ СЃС‚Р°С‚РёСЃС‚РёРєРё РїРѕ TCP Рє РїРѕСЂС‚Сѓ РїСЂРѕРєСЃРё РЅР° С…РѕСЃС‚Рµ (conntrack).
 set -euo pipefail
 # nohup/cron С‡Р°СЃС‚Рѕ РґР°СЋС‚ СѓСЂРµР·Р°РЅРЅС‹Р№ PATH вЂ” conntrack РѕР±С‹С‡РЅРѕ РІ /usr/sbin

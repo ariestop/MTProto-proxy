@@ -50,7 +50,7 @@ usage() {
 
 cfg_get() {
   local key="$1"
-  grep -m1 "^${key}=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- || true
+  grep -m1 "^${key}=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r' || true
 }
 
 require_config() {
@@ -64,6 +64,7 @@ get_proxy_port() {
   require_config
   local p
   p="$(cfg_get PORT)"
+  p="${p//[[:space:]]/}"
   [[ -n "$p" && "$p" =~ ^[0-9]+$ ]] || {
     echo "В конфиге нет корректного PORT=" >&2
     exit 1
@@ -75,6 +76,7 @@ get_proxy_server_ip() {
   require_config
   local s
   s="$(cfg_get SERVER)"
+  s="${s//[[:space:]]/}"
   [[ -n "$s" ]] || return 1
   echo "$s"
 }

@@ -723,10 +723,46 @@ fmt_bytes_human() {
   fi
 }
 
+render_tsv_table() {
+  local tsv_file="$1"
+  awk -F'\t' '
+    function rep(ch, n, s, i) {
+      s = ""
+      for (i = 0; i < n; i++) s = s ch
+      return s
+    }
+    {
+      rows[NR] = $0
+      if (NF > max_nf) max_nf = NF
+      for (i = 1; i <= NF; i++) {
+        l = length($i)
+        if (l > w[i]) w[i] = l
+      }
+    }
+    END {
+      if (NR == 0) exit 0
+      border = "+"
+      for (i = 1; i <= max_nf; i++) border = border rep("-", w[i] + 2) "+"
+      print border
+      for (r = 1; r <= NR; r++) {
+        n = split(rows[r], f, FS)
+        line = "|"
+        for (i = 1; i <= max_nf; i++) {
+          cell = (i <= n ? f[i] : "")
+          line = line " " sprintf("%-*s", w[i], cell) " |"
+        }
+        print line
+        if (r == 1) print border
+      }
+      print border
+    }
+  ' "$tsv_file"
+}
+
 report_main() {
   require_config
   ensure_statedir
-  local proxy_port now sod d7 d30 tmp traf_tmp
+  local proxy_port now sod d7 d30 tmp traf_tmp table_tmp
   proxy_port="$(get_proxy_port)"
   now="$(now_epoch)"
   sod="$(start_of_local_day)"
@@ -757,15 +793,11 @@ report_main() {
   fi
 
   echo ""
-  local fmt_header fmt_row
-  fmt_header='| %-15s | %-16s | %8s | %8s | %8s | %8s | %9s | %9s | %9s |\n'
-  fmt_row='| %-15s | %-16s | %8s | %8s | %8s | %8s | %9s | %9s | %9s |\n'
   echo "Статистика по IP (порт прокси на хосте: ${proxy_port})"
-  printf "$fmt_header" "IP" "Первое подключ." "Сегодня" "7 дней" "30 дней" "Всего" "IN" "OUT" "ALL"
-  printf '%s\n' "+-----------------+------------------+----------+----------+----------+----------+-----------+-----------+-----------+"
 
   tmp="$(mktemp)" || exit 1
   traf_tmp="$(mktemp)" || exit 1
+  table_tmp="$(mktemp)" || exit 1
   awk -v now="$now" -v sod="$sod" -v d7="$d7" -v d30="$d30" '
     function overlap(s, e, b0, b1, x, y) {
       if (e < b0 || s > b1) return 0
@@ -802,6 +834,8 @@ report_main() {
     traf_total["$tip"]="${tall:-0}"
   done <"$traf_tmp"
 
+  printf 'IP\tПервое подключ.\tСегодня\t7 дней\t30 дней\tВсего\tIN\tOUT\tALL\n' >"$table_tmp"
+
   local ip fts t d7c d30c tot ds inb outb allb
   while IFS=$'\t' read -r ip fts t d7c d30c tot; do
     if ds="$(date -d "@${fts}" '+%Y-%m-%d %H:%M' 2>/dev/null)"; then
@@ -812,13 +846,13 @@ report_main() {
     inb="${traf_in[$ip]:-0}"
     outb="${traf_out[$ip]:-0}"
     allb="${traf_total[$ip]:-$((inb + outb))}"
-    printf "$fmt_row" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$ip" "$ds" "$(fmt_duration "$t")" "$(fmt_duration "$d7c")" "$(fmt_duration "$d30c")" "$(fmt_duration "$tot")" \
-      "$(fmt_bytes_human "$inb")" "$(fmt_bytes_human "$outb")" "$(fmt_bytes_human "$allb")"
+      "$(fmt_bytes_human "$inb")" "$(fmt_bytes_human "$outb")" "$(fmt_bytes_human "$allb")" >>"$table_tmp"
   done <"$tmp"
-  rm -f "$tmp" "$traf_tmp"
+  render_tsv_table "$table_tmp"
+  rm -f "$tmp" "$traf_tmp" "$table_tmp"
 
-  printf '%s\n' "+-----------------+------------------+----------+----------+----------+----------+-----------+-----------+-----------+"
   if [[ -z "${MTPROXY_NO_NFT_TRAFFIC:-}" ]]; then
     echo "Трафик (IN/OUT/ALL) — накопительные nft-счётчики в netns контейнера (${NFT_TABLE}/${NFT_IN_SET},${NFT_OUT_SET})."
   fi

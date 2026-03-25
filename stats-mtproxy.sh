@@ -746,6 +746,7 @@ render_tsv_table() {
       print border
       for (r = 1; r <= NR; r++) {
         n = split(rows[r], f, FS)
+        if (r > 1 && f[1] == "ИТОГО") print border
         line = "|"
         for (i = 1; i <= max_nf; i++) {
           cell = (i <= n ? f[i] : "")

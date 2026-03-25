@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# TCP session stats for the proxy listen port on the host (conntrack).
+# Сбор статистики TCP-сессий к порту прокси на хосте (conntrack).
 set -euo pipefail
-# nohup/cron often provide a minimal PATH; conntrack is usually in /usr/sbin
+# В nohup/cron PATH часто урезан; conntrack обычно лежит в /usr/sbin
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
-# Optional overrides (e.g. under sudo):
+# Явные переопределения (например, под sudo):
 #   MTPROXY_CONFIG_FILE=/home/user/mtproto_config.txt
 #   MTPROXY_STATS_DIR=/home/user/.mtproxy_stats
 CONFIG_FILE="${MTPROXY_CONFIG_FILE:-${HOME}/mtproto_config.txt}"
 STATEDIR="${MTPROXY_STATS_DIR:-${HOME}/.mtproxy_stats}"
 
-# Under sudo, HOME may be /root: use the invoking user's home for state if ~/mtproto_config.txt exists there
+# Под sudo HOME может быть /root: используем домашний каталог вызывавшего пользователя,
+# если там есть ~/mtproto_config.txt
 if [[ -z "${MTPROXY_CONFIG_FILE:-}" && -z "${MTPROXY_STATS_DIR:-}" ]] &&
   [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_UID:-}" ]]; then
   _inv_home="$(getent passwd "$SUDO_UID" | cut -d: -f6)"
@@ -24,20 +25,20 @@ SESSIONS_FILE="${STATEDIR}/sessions.tsv"
 PID_FILE="${STATEDIR}/collector.pid"
 
 usage() {
-  echo "Usage: $0 {report|collect|start|stop|status|diagnose|reset}"
-  echo "  report    - table by client IP"
-  echo "  collect   - foreground collector (default: poll conntrack -L; see MTPROXY_COLLECT_EVENTS)"
-  echo "  start     - background, log ${STATEDIR}/collector.log"
-  echo "  stop      - stop background collector"
-  echo "  status    - is the collector running"
-  echo "  diagnose  - paths, port, conntrack, hints if data is missing"
-  echo "  reset trim|all [ -y ]  - see below"
-  echo "Optional: MTPROXY_CONFIG_FILE, MTPROXY_STATS_DIR; MTPROXY_POLL_SEC (seconds, default 3);"
-  echo "  MTPROXY_COLLECT_EVENTS=1 - legacy conntrack -E mode (often empty with Docker)."
+  echo "Использование: $0 {report|collect|start|stop|status|diagnose|reset}"
+  echo "  report    - таблица по IP клиентов"
+  echo "  collect   - сборщик в foreground (по умолчанию: опрос conntrack -L; см. MTPROXY_COLLECT_EVENTS)"
+  echo "  start     - запуск в фоне, лог ${STATEDIR}/collector.log"
+  echo "  stop      - остановить фоновый сборщик"
+  echo "  status    - запущен ли сборщик"
+  echo "  diagnose  - пути, порт, conntrack, подсказки при отсутствии данных"
+  echo "  reset trim|all [ -y ]  - см. ниже"
+  echo "Опционально: MTPROXY_CONFIG_FILE, MTPROXY_STATS_DIR; MTPROXY_POLL_SEC (секунды, по умолчанию 3);"
+  echo "  MTPROXY_COLLECT_EVENTS=1 - старый режим conntrack -E (с Docker часто пусто)."
   echo ""
-  echo "Reset ${SESSIONS_FILE}:"
-  echo "  $0 reset trim [ -y ]  - drop rows with Docker/127 IPs only (::ffff:172.16-31)"
-  echo "  $0 reset all  [ -y ]  - backup and wipe file (all session history)"
+  echo "Сброс ${SESSIONS_FILE}:"
+  echo "  $0 reset trim [ -y ]  - удалить только строки с Docker/127 IP (::ffff:172.16-31)"
+  echo "  $0 reset all  [ -y ]  - сделать бэкап и очистить файл (вся история сессий)"
   exit "${1:-0}"
 }
 
@@ -48,7 +49,7 @@ cfg_get() {
 
 require_config() {
   [[ -f "$CONFIG_FILE" ]] || {
-    echo "Missing ${CONFIG_FILE}. Configure the proxy first (start-mtproxy.sh -> 1)." >&2
+    echo "Не найден ${CONFIG_FILE}. Сначала настройте прокси (start-mtproxy.sh -> 1)." >&2
     exit 1
   }
 }
@@ -58,7 +59,7 @@ get_proxy_port() {
   local p
   p="$(cfg_get PORT)"
   [[ -n "$p" && "$p" =~ ^[0-9]+$ ]] || {
-    echo "Config has no valid PORT=" >&2
+    echo "В конфиге нет корректного PORT=" >&2
     exit 1
   }
   echo "$p"
@@ -111,8 +112,8 @@ start_of_local_day() {
 
 declare -A G_PENDING_START
 
-# Skip typical Docker/bridge (172.16-31) or IPv4-mapped IPv6 (::ffff:...).
-# Do not count these as proxy "clients".
+# Пропускаем служебные адреса Docker/bridge (172.16-31) и IPv4 в IPv6 (::ffff:...).
+# Такие источники не считаем клиентами прокси.
 skip_src_container_or_internal() {
   local s="${1,,}"
   [[ "$s" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] && return 0
@@ -121,7 +122,7 @@ skip_src_container_or_internal() {
   return 1
 }
 
-# First match src...dst...sport...dport=PORT in a conntrack -L line.
+# Берём первое вхождение src...dst...sport...dport=PORT в строке conntrack -L.
 parse_list_line_client() {
   local line="$1" port="$2" lc
   lc="${line,,}"
@@ -133,14 +134,14 @@ parse_list_line_client() {
   printf '%s\t%s\n' "$src" "$sport"
 }
 
-# Poll conntrack -L (more stable than -E behind NAT/Docker).
+# Опрос conntrack -L (стабильнее, чем -E, за NAT/Docker).
 collect_poll_loop() {
   local proxy_port="$1"
   local poll_sec now key ip sport dur last
   poll_sec="${MTPROXY_POLL_SEC:-3}"
   [[ "$poll_sec" =~ ^[0-9]+$ ]] && ((poll_sec >= 1 && poll_sec <= 300)) || poll_sec=3
   declare -A active_last_seen
-  echo "[stats-mtproxy] Polling conntrack -L every ${poll_sec}s, dport ${proxy_port} (ignoring src 172.16-31.*, 127.*, ::ffff:...)." >&2
+  echo "[stats-mtproxy] Опрос conntrack -L каждые ${poll_sec}с, dport ${proxy_port} (игнор src 172.16-31.*, 127.*, ::ffff:...)." >&2
   while true; do
     now="$(now_epoch)"
     declare -A seen=()
@@ -208,16 +209,16 @@ collect_wrapper() {
   proxy_port="$(get_proxy_port)"
   ensure_statedir
   command -v conntrack >/dev/null 2>&1 || {
-    echo "conntrack not found. Install the package and load the kernel module if needed:" >&2
+    echo "Команда conntrack не найдена. Установите пакет и при необходимости загрузите модуль ядра:" >&2
     echo "  Debian/Ubuntu: sudo apt update && sudo apt install -y conntrack" >&2
-    echo "  Fedora/RHEL:   sudo dnf install -y conntrack-tools   # or: yum install conntrack-tools" >&2
-    echo "  Module:        sudo modprobe nf_conntrack 2>/dev/null; lsmod | grep nf_conntrack" >&2
-    echo "  conntrack often needs root: sudo $0 collect" >&2
+    echo "  Fedora/RHEL:   sudo dnf install -y conntrack-tools   # или: yum install conntrack-tools" >&2
+    echo "  Модуль:        sudo modprobe nf_conntrack 2>/dev/null; lsmod | grep nf_conntrack" >&2
+    echo "  conntrack часто требует root: sudo $0 collect" >&2
     exit 1
   }
-  echo "[stats-mtproxy] Host listen port: ${proxy_port}. Writing sessions to ${SESSIONS_FILE}" >&2
+  echo "[stats-mtproxy] Порт хоста: ${proxy_port}. Пишем сессии в ${SESSIONS_FILE}" >&2
   if [[ -n "${MTPROXY_COLLECT_EVENTS:-}" ]]; then
-    echo "[stats-mtproxy] conntrack -E mode (experimental)." >&2
+    echo "[stats-mtproxy] Режим conntrack -E (экспериментально)." >&2
     if command -v stdbuf >/dev/null 2>&1; then
       while IFS= read -r line; do
         run_collect_pipe "$proxy_port" "$line"
@@ -239,18 +240,18 @@ start_background() {
   logf="${STATEDIR}/collector.log"
   self="$(script_abspath)"
   command -v conntrack >/dev/null 2>&1 || {
-    echo "Install conntrack (conntrack-tools), then run start again." >&2
+    echo "Установите conntrack (conntrack-tools), затем повторите start." >&2
     exit 1
   }
   if ! conntrack -L >/dev/null 2>&1; then
-    echo "conntrack not accessible (need root / netlink). Run: sudo $0 start" >&2
+    echo "conntrack недоступен (нужны root-права / netlink). Запустите: sudo $0 start" >&2
     exit 1
   fi
   if [[ -f "$PID_FILE" ]]; then
     local old
     old="$(cat "$PID_FILE" 2>/dev/null || true)"
     if [[ -n "$old" ]] && kill -0 "$old" 2>/dev/null; then
-      echo "Collector already running (PID $old)."
+      echo "Сборщик уже запущен (PID $old)."
       exit 0
     fi
     rm -f "$PID_FILE"
@@ -261,27 +262,27 @@ start_background() {
   echo "$pid" >"$PID_FILE"
   sleep 0.5
   if ! kill -0 "$pid" 2>/dev/null; then
-    echo "Collector exited immediately. Last lines of ${logf}:" >&2
+    echo "Сборщик завершился сразу. Последние строки ${logf}:" >&2
     tail -n 25 "$logf" 2>/dev/null || true
     rm -f "$PID_FILE"
-    echo "Hint: sudo $0 diagnose" >&2
+    echo "Подсказка: sudo $0 diagnose" >&2
     exit 1
   fi
-  echo "Collector started, PID ${pid}, log: $logf (port ${proxy_port})"
+  echo "Сборщик запущен, PID ${pid}, лог: $logf (порт ${proxy_port})"
 }
 
 stop_background() {
   [[ -f "$PID_FILE" ]] || {
-    echo "PID file not found."
+    echo "PID-файл не найден."
     exit 0
   }
   local pid
   pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
     kill "$pid" 2>/dev/null || true
-    echo "Stopped PID $pid"
+    echo "Остановлен PID $pid"
   else
-    echo "Process not found."
+    echo "Процесс не найден."
   fi
   rm -f "$PID_FILE"
 }
@@ -291,14 +292,14 @@ collector_status() {
     local pid
     pid="$(cat "$PID_FILE" 2>/dev/null || true)"
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      echo "Collector running (PID $pid)"
+      echo "Сборщик работает (PID $pid)"
       return 0
     fi
     if [[ -n "$pid" ]]; then
-      echo "Collector not running (${PID_FILE} lists PID $pid but process is gone)."
+      echo "Сборщик не запущен (в ${PID_FILE} указан PID $pid, но процесс уже завершён)."
     fi
   else
-    echo "Collector not running (no ${PID_FILE})."
+    echo "Сборщик не запущен (нет ${PID_FILE})."
   fi
   return 1
 }
@@ -311,14 +312,14 @@ diagnose_main() {
     require_config || exit 1
     proxy_port="$(get_proxy_port)"
     logf="${STATEDIR}/collector.log"
-    echo "======== stats-mtproxy diagnose ========"
+    echo "======== Диагностика stats-mtproxy ========"
     echo "CONFIG_FILE=${CONFIG_FILE}"
     echo "STATEDIR=${STATEDIR}"
-    echo "PORT from config (host): ${proxy_port}"
+    echo "PORT из конфига (хост): ${proxy_port}"
     if [[ -f "$SESSIONS_FILE" ]]; then
-      echo "sessions.tsv: ${SESSIONS_FILE} ($(wc -c <"$SESSIONS_FILE") bytes)"
+      echo "sessions.tsv: ${SESSIONS_FILE} ($(wc -c <"$SESSIONS_FILE") байт)"
     else
-      echo "sessions.tsv: file does not exist yet"
+      echo "sessions.tsv: файла пока нет"
     fi
     echo "EUID=${EUID:-} SUDO_UID=${SUDO_UID:-}"
     echo ""
@@ -326,31 +327,31 @@ diagnose_main() {
       if conntrack -L >/dev/null 2>&1; then
         echo "conntrack -L: OK"
         lines="$(conntrack -L -p tcp 2>/dev/null | grep "dport=${proxy_port}" | wc -l)"
-        echo "conntrack entries with dport=${proxy_port} (now): ${lines}"
-        echo "Sample (up to 8 lines with this dport):"
-        conntrack -L -p tcp 2>/dev/null | grep "dport=${proxy_port}" | head -8 || echo "  (empty - no active TCP to this port or different field names)"
+        echo "Записей conntrack с dport=${proxy_port} (сейчас): ${lines}"
+        echo "Пример (до 8 строк с этим dport):"
+        conntrack -L -p tcp 2>/dev/null | grep "dport=${proxy_port}" | head -8 || echo "  (пусто - нет активных TCP на этот порт или иные имена полей)"
       else
-        echo "conntrack -L: denied (need root). Run: sudo $0 diagnose"
+        echo "conntrack -L: отказ (нужен root). Запуск: sudo $0 diagnose"
       fi
     else
-      echo "conntrack: command not found (apt install conntrack)"
+      echo "conntrack: команда не найдена (apt install conntrack)"
     fi
     echo ""
     if command -v ss >/dev/null 2>&1; then
-      echo "Listening on port ${proxy_port} (ss):"
-      ss -tlnp 2>/dev/null | grep -E ":${proxy_port}\\s" || echo "  (no LISTEN on :${proxy_port} in ss output - check Docker -p)"
+      echo "Прослушивание порта ${proxy_port} (ss):"
+      ss -tlnp 2>/dev/null | grep -E ":${proxy_port}\\s" || echo "  (нет LISTEN на :${proxy_port} в ss - проверьте Docker -p)"
     fi
     echo ""
     if [[ -f "$logf" ]]; then
-      echo "Tail of ${logf}:"
+      echo "Хвост ${logf}:"
       tail -n 20 "$logf"
     else
-      echo "Log ${logf} has not been created yet."
+      echo "Лог ${logf} ещё не создан."
     fi
     echo ""
-    echo "Collector polls conntrack -L by default (not -E); legacy mode: MTPROXY_COLLECT_EVENTS=1."
-    echo "If the collector dies: sudo $0 start  (after conntrack-tools)."
-    echo "Empty report: no inbound sessions on port ${proxy_port} after start (or only src 172.16-31 / 127.* - filtered out)."
+    echo "По умолчанию сборщик опрашивает conntrack -L (не -E); старый режим: MTPROXY_COLLECT_EVENTS=1."
+    echo "Если сборщик падает: sudo $0 start  (после установки conntrack-tools)."
+    echo "Пустой отчёт: нет входящих сессий на порт ${proxy_port} после start (или только src 172.16-31 / 127.* - отфильтрованы)."
     echo "========"
   )
 }
@@ -375,19 +376,19 @@ report_main() {
 
   if [[ ! -s "$SESSIONS_FILE" ]]; then
     echo ""
-    echo "No data in ${SESSIONS_FILE} yet."
-    echo "Start the collector (conntrack-tools) with the same paths as this report:"
-    echo "  ./stats-mtproxy.sh start   or   sudo ./stats-mtproxy.sh start"
-    echo "(under sudo, data goes to the invoking user's home if ~/mtproto_config.txt exists there)."
-    echo "If you only ran sudo before without that behavior, stop the old process and start again."
-    echo "Diagnostics: ./stats-mtproxy.sh diagnose   or   sudo ./stats-mtproxy.sh diagnose"
+    echo "В ${SESSIONS_FILE} пока нет данных."
+    echo "Запустите сборщик (conntrack-tools) с теми же путями, что и для отчёта:"
+    echo "  ./stats-mtproxy.sh start   или   sudo ./stats-mtproxy.sh start"
+    echo "(под sudo данные пишутся в домашний каталог вызывавшего пользователя, если там есть ~/mtproto_config.txt)."
+    echo "Если раньше запускали только sudo без этого поведения — остановите старый процесс и запустите start заново."
+    echo "Диагностика: ./stats-mtproxy.sh diagnose   или   sudo ./stats-mtproxy.sh diagnose"
     collector_status || true
     echo ""
     return 0
   fi
 
   echo ""
-  echo "Per-IP stats (proxy listen port on host: ${proxy_port})."
+  echo "Статистика по IP (порт прокси на хосте: ${proxy_port})."
   echo "=================================================================================="
 
   tmp="$(mktemp)" || exit 1
@@ -418,7 +419,7 @@ report_main() {
   ' "$SESSIONS_FILE" | sort -t $'\t' -k1 >"$tmp"
 
   printf '%-42s %-20s %12s %12s %12s %12s\n' \
-    "IP" "First seen" "Today" "7 days" "30 days" "Total"
+    "IP" "Первое подключение" "Сегодня" "7 дней" "30 дней" "Всего"
 
   local ip fts t d7c d30c tot ds
   while IFS=$'\t' read -r ip fts t d7c d30c tot; do
@@ -447,45 +448,45 @@ reset_stats_main() {
       all | a) mode=all ;;
       -y | --yes) yes=1 ;;
       -h | --help)
-        echo "reset trim [ -y ] - remove rows with internal IPs only (see README)."
-        echo "reset all  [ -y ] - backup sessions.tsv and wipe it."
+        echo "reset trim [ -y ] - удалить строки со служебными IP (см. README)."
+        echo "reset all  [ -y ] - сделать бэкап sessions.tsv и очистить файл."
         return 0
         ;;
       *)
-        echo "Unknown reset argument: $a" >&2
-        echo "Use: $0 reset trim|all [ -y ]" >&2
+        echo "Неизвестный аргумент reset: $a" >&2
+        echo "Используйте: $0 reset trim|all [ -y ]" >&2
         exit 1
         ;;
     esac
   done
   [[ -n "$mode" ]] || {
-    echo "Specify mode: $0 reset trim|all [ -y ]" >&2
+    echo "Укажите режим: $0 reset trim|all [ -y ]" >&2
     exit 1
   }
   if [[ ! -f "$SESSIONS_FILE" ]] || [[ ! -s "$SESSIONS_FILE" ]]; then
-    echo "${SESSIONS_FILE} is empty or missing - nothing to reset."
+    echo "${SESSIONS_FILE} пуст или отсутствует - сбрасывать нечего."
     return 0
   fi
   if [[ "$yes" != 1 ]]; then
     local prompt
     if [[ "$mode" == trim ]]; then
-      prompt="Remove from ${SESSIONS_FILE} only Docker/127 rows (backup .bak.timestamp)? [y/N] "
+      prompt="Удалить из ${SESSIONS_FILE} только строки Docker/127 (с бэкапом .bak.timestamp)? [y/N] "
     else
-      prompt="Backup and WIPE entire ${SESSIONS_FILE}? [y/N] "
+      prompt="Сделать бэкап и ПОЛНОСТЬЮ ОЧИСТИТЬ ${SESSIONS_FILE}? [y/N] "
     fi
     read -r -p "$prompt" _c || true
     [[ "${_c:-}" == y || "${_c:-}" == Y ]] || {
-      echo "Cancelled."
+      echo "Отменено."
       exit 0
     }
   fi
   local bak
   bak="${SESSIONS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
   cp -a "$SESSIONS_FILE" "$bak" || {
-    echo "Could not create backup ${bak}" >&2
+    echo "Не удалось создать бэкап ${bak}" >&2
     exit 1
   }
-  echo "Backup: ${bak}"
+  echo "Бэкап: ${bak}"
   if [[ "$mode" == trim ]]; then
     awk 'NF >= 4 {
       ip = $3
@@ -495,11 +496,11 @@ reset_stats_main() {
       print
     }' "$bak" >"${SESSIONS_FILE}.tmp" && mv "${SESSIONS_FILE}.tmp" "$SESSIONS_FILE"
     chmod 600 "$SESSIONS_FILE" 2>/dev/null || true
-    echo "Done: removed rows with filtered IPs."
+    echo "Готово: строки с отфильтрованными IP удалены."
   else
     : >"$SESSIONS_FILE"
     chmod 600 "$SESSIONS_FILE" 2>/dev/null || true
-    echo "Done: file wiped."
+    echo "Готово: файл очищен."
   fi
 }
 

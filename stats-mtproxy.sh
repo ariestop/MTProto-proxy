@@ -225,26 +225,68 @@ docker_exec_mtproxy() {
   fi
 }
 
+hex_le_ipv4_to_dotted() {
+  local h="${1,,}"
+  [[ "$h" =~ ^[0-9a-f]{8}$ ]] || return 1
+  local b1="${h:6:2}" b2="${h:4:2}" b3="${h:2:2}" b4="${h:0:2}"
+  printf '%d.%d.%d.%d' "$((16#$b1))" "$((16#$b2))" "$((16#$b3))" "$((16#$b4))"
+}
+
+hex_port_to_dec() {
+  local h="${1,,}"
+  [[ "$h" =~ ^[0-9a-f]{1,4}$ ]] || return 1
+  echo "$((16#$h))"
+}
+
+list_docker_procnet_established_peers_on_port() {
+  local port="$1"
+  [[ -n "$port" ]] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+
+  local port_hex
+  port_hex="$(printf '%04x' "$port")"
+  port_hex="${port_hex,,}"
+
+  # /proc/net/tcp: local_address rem_address st ...
+  # st=01 ESTABLISHED
+  docker_exec_mtproxy sh -lc "cat /proc/net/tcp 2>/dev/null || true" |
+    awk 'NR>1 {print $2 "\t" $3 "\t" $4}' |
+    while IFS=$'\t' read -r laddr raddr st || [[ -n "$laddr" ]]; do
+      [[ -n "$laddr" && -n "$raddr" && -n "$st" ]] || continue
+      [[ "$st" == "01" ]] || continue
+      local lip lport rip rport ip sport
+      lip="${laddr%:*}"; lport="${laddr##*:}"
+      [[ "${lport,,}" == "$port_hex" ]] || continue
+      rip="${raddr%:*}"; rport="${raddr##*:}"
+      ip="$(hex_le_ipv4_to_dotted "$rip" 2>/dev/null || true)"
+      sport="$(hex_port_to_dec "$rport" 2>/dev/null || true)"
+      [[ -n "$ip" && -n "$sport" ]] || continue
+      printf '%s\t%s\n' "$ip" "$sport"
+    done
+}
+
 list_docker_ss_established_peers_on_port() {
   local port="$1"
   [[ -n "$port" ]] || return 0
   command -v docker >/dev/null 2>&1 || return 0
 
   # Пытаемся ss внутри контейнера. Если ss нет — тихо выходим (fallback на conntrack/host ss).
-  docker_exec_mtproxy sh -lc 'command -v ss >/dev/null 2>&1' || return 0
-
-  docker_exec_mtproxy sh -lc "ss -tn state established 2>/dev/null | awk '\$1 ~ /^ESTAB/ {print \$4 \"\t\" \$5}'" |
-    awk -v p=":${port}" '
-      {
-        la=$1; pa=$2
-        if (index(la,p) == 0) next
-        # peer:port
-        ip=pa; sub(/:[0-9]+$/,"",ip)
-        sport=pa; sub(/^.*:/,"",sport)
-        if (ip=="" || sport=="") next
-        print ip "\t" sport
-      }
-    '
+  if docker_exec_mtproxy sh -lc 'command -v ss >/dev/null 2>&1'; then
+    docker_exec_mtproxy sh -lc "ss -tn state established 2>/dev/null | awk '\$1 ~ /^ESTAB/ {print \$4 \"\t\" \$5}'" |
+      awk -v p=":${port}" '
+        {
+          la=$1; pa=$2
+          if (index(la,p) == 0) next
+          # peer:port
+          ip=pa; sub(/:[0-9]+$/,"",ip)
+          sport=pa; sub(/^.*:/,"",sport)
+          if (ip=="" || sport=="") next
+          print ip "\t" sport
+        }
+      '
+  else
+    list_docker_procnet_established_peers_on_port "$port"
+  fi
 }
 
 append_session_row() {
@@ -541,7 +583,7 @@ diagnose_main() {
       ss -tn state established 2>/dev/null | awk -v p=":${proxy_port}" '$1 ~ /^ESTAB/ && index($4,p)>0 {print; if(++n>=6) exit}' || echo "  (пусто)"
     fi
     if command -v docker >/dev/null 2>&1; then
-      lines="$( { docker_exec_mtproxy sh -lc "ss -tn state established 2>/dev/null | awk '\\$1 ~ /^ESTAB/ {print \\$4}'" | grep -cE ":${proxy_port}$"; } 2>/dev/null || echo 0 )"
+      lines="$(list_docker_ss_established_peers_on_port "$proxy_port" 2>/dev/null | wc -l | tr -d ' ')"
       echo "ESTAB внутри контейнера к *:${proxy_port} (docker exec): ${lines}"
     fi
     echo ""

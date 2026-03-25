@@ -837,6 +837,7 @@ report_main() {
   printf 'IP\tПервое подключ.\tСегодня\t7 дней\t30 дней\tВсего\tIN\tOUT\tALL\n' >"$table_tmp"
 
   local ip fts t d7c d30c tot ds inb outb allb
+  local _n_ab=0 _sum_t=0 _sum_d7=0 _sum_d30=0 _sum_tot=0 _sum_in=0 _sum_out=0 _sum_all=0
   while IFS=$'\t' read -r ip fts t d7c d30c tot; do
     if ds="$(date -d "@${fts}" '+%Y-%m-%d %H:%M' 2>/dev/null)"; then
       :
@@ -846,10 +847,29 @@ report_main() {
     inb="${traf_in[$ip]:-0}"
     outb="${traf_out[$ip]:-0}"
     allb="${traf_total[$ip]:-$((inb + outb))}"
+    ((_n_ab++)) || true
+    _sum_t=$((_sum_t + t))
+    _sum_d7=$((_sum_d7 + d7c))
+    _sum_d30=$((_sum_d30 + d30c))
+    _sum_tot=$((_sum_tot + tot))
+    _sum_in=$((_sum_in + inb))
+    _sum_out=$((_sum_out + outb))
+    _sum_all=$((_sum_all + allb))
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$ip" "$ds" "$(fmt_duration "$t")" "$(fmt_duration "$d7c")" "$(fmt_duration "$d30c")" "$(fmt_duration "$tot")" \
       "$(fmt_bytes_human "$inb")" "$(fmt_bytes_human "$outb")" "$(fmt_bytes_human "$allb")" >>"$table_tmp"
   done <"$tmp"
+
+  printf 'ИТОГО\t%s абонентов\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$_n_ab" \
+    "$(fmt_duration "$_sum_t")" \
+    "$(fmt_duration "$_sum_d7")" \
+    "$(fmt_duration "$_sum_d30")" \
+    "$(fmt_duration "$_sum_tot")" \
+    "$(fmt_bytes_human "$_sum_in")" \
+    "$(fmt_bytes_human "$_sum_out")" \
+    "$(fmt_bytes_human "$_sum_all")" >>"$table_tmp"
+
   render_tsv_table "$table_tmp"
   rm -f "$tmp" "$traf_tmp" "$table_tmp"
 

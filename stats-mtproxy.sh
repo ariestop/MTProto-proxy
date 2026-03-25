@@ -106,8 +106,17 @@ start_of_local_day() {
 
 declare -A G_PENDING_START
 
-# Первый «оригинальный» кортеж в строке conntrack -L (клиент → хост:порт прокси).
-# Пропускаем src=172.17.* (исходящий трафик из контейнера Docker на :443).
+# Источник — типичный адрес Docker/bridge (172.16–31) или IPv4 в IPv6 (::ffff:…).
+# Не считаем «абонентом» прокси.
+skip_src_container_or_internal() {
+  local s="${1,,}"
+  [[ "$s" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] && return 0
+  [[ "$s" =~ ^::ffff:172\.(1[6-9]|2[0-9]|3[0-1])\. ]] && return 0
+  [[ "$s" =~ ^127\. ]] && return 0
+  return 1
+}
+
+# Первый кортеж src…dst…sport…dport=PORT в строке conntrack -L.
 parse_list_line_client() {
   local line="$1" port="$2" lc
   lc="${line,,}"
@@ -115,7 +124,7 @@ parse_list_line_client() {
   local src sport
   src="${BASH_REMATCH[1]}"
   sport="${BASH_REMATCH[2]}"
-  [[ "$src" =~ ^172\.17\. ]] && return 1
+  skip_src_container_or_internal "$src" && return 1
   printf '%s\t%s\n' "$src" "$sport"
 }
 
@@ -126,7 +135,7 @@ collect_poll_loop() {
   poll_sec="${MTPROXY_POLL_SEC:-3}"
   [[ "$poll_sec" =~ ^[0-9]+$ ]] && ((poll_sec >= 1 && poll_sec <= 300)) || poll_sec=3
   declare -A active_start
-  echo "[stats-mtproxy] Опрос conntrack -L каждые ${poll_sec}s, порт ${proxy_port} (игнор src 172.17.*)." >&2
+  echo "[stats-mtproxy] Опрос conntrack -L каждые ${poll_sec}s, порт ${proxy_port} (игнор src 172.16–31.*, 127.*, ::ffff:…)." >&2
   while true; do
     now="$(now_epoch)"
     declare -A seen=()
@@ -338,7 +347,7 @@ diagnose_main() {
     echo ""
     echo "Сборщик по умолчанию опрашивает conntrack -L (не -E); старый режим: MTPROXY_COLLECT_EVENTS=1."
     echo "Если сборщик падает: sudo $0 start  (после conntrack-tools)."
-    echo "Пустой отчёт: нет входящих сессий на порт ${proxy_port} после start (или только исход 172.17.* — они отфильтрованы)."
+    echo "Пустой отчёт: нет входящих сессий на порт ${proxy_port} после start (или только src 172.16–31 / 127.* — отфильтрованы)."
     echo "────────"
   )
 }
@@ -390,6 +399,9 @@ report_main() {
     NF >= 4 {
       s = $1 + 0; e = $2 + 0; ip = $3; dur = $4 + 0
       if (s > e || dur < 0) next
+      if (ip ~ /^172\.(1[6-9]|2[0-9]|3[0-1])\./) next
+      if (ip ~ /^127\./) next
+      if (ip ~ /^::ffff:172\.(1[6-9]|2[0-9]|3[0-1])\./) next
       first[ip] = (ip in first ? (s < first[ip] ? s : first[ip]) : s)
       total[ip] += dur
       today[ip] += overlap(s, e, sod, now)

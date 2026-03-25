@@ -484,7 +484,7 @@ report_main() {
     local _rpid
     if [[ -f "$PID_FILE" ]]; then
       _rpid="$(cat "$PID_FILE" 2>/dev/null || true)"
-      if [[ -n "$_rpid" ]] && ! kill -0 "$_rpid" 2>/dev/null; then
+      if [[ -n "$_rpid" ]] && ! { kill -0 "$_rpid" 2>/dev/null || ps -p "$_rpid" >/dev/null 2>&1; }; then
         echo "Сборщик упал: в ${PID_FILE} указан PID ${_rpid}, но процесс уже нет."
         echo "См. лог: tail -50 ${STATEDIR}/collector.log"
         echo "Очистите PID и перезапустите: sudo $0 stop 2>/dev/null; sudo $0 start"

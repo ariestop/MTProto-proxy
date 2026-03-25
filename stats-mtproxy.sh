@@ -280,6 +280,9 @@ collect_poll_loop() {
       key="${ip}|${sport}"
       seen["$key"]=1
       [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
+      if [[ -n "${active_last_seen[$key]:-}" ]]; then
+        append_session_row "${active_last_seen[$key]}" "$now" "$ip"
+      fi
       active_last_seen["$key"]="$now"
     done < <(conntrack -L -p tcp -n 2>/dev/null || true)
 
@@ -290,6 +293,9 @@ collect_poll_loop() {
         key="${ip}|${sport}"
         seen["$key"]=1
         [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
+        if [[ -n "${active_last_seen[$key]:-}" ]]; then
+          append_session_row "${active_last_seen[$key]}" "$now" "$ip"
+        fi
         active_last_seen["$key"]="$now"
       done < <(list_ss_established_peers_on_port "$proxy_port")
     fi
@@ -301,6 +307,9 @@ collect_poll_loop() {
         key="${ip}|${sport}"
         seen["$key"]=1
         [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
+        if [[ -n "${active_last_seen[$key]:-}" ]]; then
+          append_session_row "${active_last_seen[$key]}" "$now" "$ip"
+        fi
         active_last_seen["$key"]="$now"
       done < <(list_docker_ss_established_peers_on_port "$proxy_port")
     fi
@@ -310,8 +319,7 @@ collect_poll_loop() {
     for key in "${_keys[@]}"; do
       if [[ -z "${seen[$key]:-}" ]]; then
         st="${active_first_seen[$key]:-}"
-        # Закрываем сессию моментом текущего опроса: так учитываются и короткие
-        # потоки, которые успели попасть только в один снимок conntrack/ss.
+        # Если поток попал в один снимок и исчез, закроем его этим же now.
         if [[ -n "$st" ]]; then
           ip="${key%|*}"
           append_session_row "$st" "$now" "$ip"

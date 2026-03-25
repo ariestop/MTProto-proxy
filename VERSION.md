@@ -1,10 +1,22 @@
-﻿# Р’РµСЂСЃРёРѕРЅРёСЂРѕРІР°РЅРёРµ РїСЂРѕРµРєС‚Р° mtproxy вЂ” **1.2.5**
+# Р’РµСЂСЃРёРѕРЅРёСЂРѕРІР°РЅРёРµ РїСЂРѕРµРєС‚Р° mtproxy вЂ” **1.2.6**
 
 Р¤РѕСЂРјР°С‚: [Semantic Versioning](https://semver.org/lang/ru/) (`MAJOR.MINOR.PATCH`).
 
 | | |
 |--|--|
 | **Р’РµСЂСЃРёСЏ** | **1.2.5** |
+
+---
+
+## 1.2.6 — 2026-03-25
+
+### `stats-mtproxy.sh`
+
+- User-facing messages and comments in English (fixes mojibake on Linux when the script was saved with wrong encoding on Windows).
+
+### Repo
+
+- `.gitattributes`: `*.sh text eol=lf`.
 
 ---
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# РЎР±РѕСЂ СЃС‚Р°С‚РёСЃС‚РёРєРё РїРѕ TCP Рє РїРѕСЂС‚Сѓ РїСЂРѕРєСЃРё РЅР° С…РѕСЃС‚Рµ (conntrack).
+# TCP session stats for the proxy listen port on the host (conntrack).
 set -euo pipefail
-# nohup/cron С‡Р°СЃС‚Рѕ РґР°СЋС‚ СѓСЂРµР·Р°РЅРЅС‹Р№ PATH вЂ” conntrack РѕР±С‹С‡РЅРѕ РІ /usr/sbin
+# nohup/cron often provide a minimal PATH; conntrack is usually in /usr/sbin
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
-# РЇРІРЅС‹Р№ РїРµСЂРµРѕРїСЂРµРґРµР»РµРЅРёРµ (РЅР°РїСЂРёРјРµСЂ РїРѕРґ sudo):
+# Optional overrides (e.g. under sudo):
 #   MTPROXY_CONFIG_FILE=/home/user/mtproto_config.txt
 #   MTPROXY_STATS_DIR=/home/user/.mtproxy_stats
 CONFIG_FILE="${MTPROXY_CONFIG_FILE:-${HOME}/mtproto_config.txt}"
 STATEDIR="${MTPROXY_STATS_DIR:-${HOME}/.mtproxy_stats}"
 
-# РџРѕРґ sudo HOME=/root: РєР»Р°РґС‘Рј РґР°РЅРЅС‹Рµ РІ РґРѕРјР°С€РЅРёР№ РєР°С‚Р°Р»РѕРі С‚РѕРіРѕ, РєС‚Рѕ РІС‹Р·РІР°Р» sudo (РµСЃР»Рё С‚Р°Рј РєРѕРЅС„РёРі РїСЂРѕРєСЃРё)
+# Under sudo, HOME may be /root: use the invoking user's home for state if ~/mtproto_config.txt exists there
 if [[ -z "${MTPROXY_CONFIG_FILE:-}" && -z "${MTPROXY_STATS_DIR:-}" ]] &&
   [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_UID:-}" ]]; then
   _inv_home="$(getent passwd "$SUDO_UID" | cut -d: -f6)"
@@ -24,20 +24,20 @@ SESSIONS_FILE="${STATEDIR}/sessions.tsv"
 PID_FILE="${STATEDIR}/collector.pid"
 
 usage() {
-  echo "РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: $0 {report|collect|start|stop|status|diagnose|reset}"
-  echo "  report    вЂ” С‚Р°Р±Р»РёС†Р° РїРѕ IP"
-  echo "  collect   вЂ” СЃР±РѕСЂС‰РёРє (РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ РѕРїСЂРѕСЃ conntrack -L; СЃРј. MTPROXY_COLLECT_EVENTS)"
-  echo "  start     вЂ” С„РѕРЅ, Р»РѕРі ${STATEDIR}/collector.log"
-  echo "  stop      вЂ” РѕСЃС‚Р°РЅРѕРІРёС‚СЊ С„РѕРЅРѕРІС‹Р№ СЃР±РѕСЂС‰РёРє"
-  echo "  status    вЂ” Р·Р°РїСѓС‰РµРЅ Р»Рё СЃР±РѕСЂС‰РёРє"
-  echo "  diagnose  вЂ” РїСѓС‚Рё, РїРѕСЂС‚, conntrack, РїРѕРґСЃРєР°Р·РєРё (РµСЃР»Рё РЅРµС‚ РґР°РЅРЅС‹С…)"
-  echo "  reset trim|all [ -y ]  вЂ” СЃРј. РЅРёР¶Рµ"
-  echo "РћРїС†РёРѕРЅР°Р»СЊРЅРѕ: MTPROXY_CONFIG_FILE, MTPROXY_STATS_DIR; MTPROXY_POLL_SEC (СЃРµРє, РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ 3);"
-  echo "  MTPROXY_COLLECT_EVENTS=1 вЂ” СЃС‚Р°СЂС‹Р№ СЂРµР¶РёРј conntrack -E (СЃ Docker С‡Р°СЃС‚Рѕ РїСѓСЃС‚Рѕ)."
+  echo "Usage: $0 {report|collect|start|stop|status|diagnose|reset}"
+  echo "  report    - table by client IP"
+  echo "  collect   - foreground collector (default: poll conntrack -L; see MTPROXY_COLLECT_EVENTS)"
+  echo "  start     - background, log ${STATEDIR}/collector.log"
+  echo "  stop      - stop background collector"
+  echo "  status    - is the collector running"
+  echo "  diagnose  - paths, port, conntrack, hints if data is missing"
+  echo "  reset trim|all [ -y ]  - see below"
+  echo "Optional: MTPROXY_CONFIG_FILE, MTPROXY_STATS_DIR; MTPROXY_POLL_SEC (seconds, default 3);"
+  echo "  MTPROXY_COLLECT_EVENTS=1 - legacy conntrack -E mode (often empty with Docker)."
   echo ""
-  echo "РЎР±СЂРѕСЃ ${SESSIONS_FILE}:"
-  echo "  $0 reset trim [ -y ]  вЂ” СѓРґР°Р»РёС‚СЊ С‚РѕР»СЊРєРѕ СЃС‚СЂРѕРєРё СЃ IP Docker/127 (::ffff:172.16вЂ“31)"
-  echo "  $0 reset all  [ -y ]  вЂ” Р±СЌРєР°Рї Рё РїСѓСЃС‚РѕР№ С„Р°Р№Р» (РІСЃСЏ РёСЃС‚РѕСЂРёСЏ СЃРµСЃСЃРёР№)"
+  echo "Reset ${SESSIONS_FILE}:"
+  echo "  $0 reset trim [ -y ]  - drop rows with Docker/127 IPs only (::ffff:172.16-31)"
+  echo "  $0 reset all  [ -y ]  - backup and wipe file (all session history)"
   exit "${1:-0}"
 }
 
@@ -48,7 +48,7 @@ cfg_get() {
 
 require_config() {
   [[ -f "$CONFIG_FILE" ]] || {
-    echo "РќРµС‚ ${CONFIG_FILE}. РЎРЅР°С‡Р°Р»Р° СѓСЃС‚Р°РЅРѕРІРёС‚Рµ РїСЂРѕРєСЃРё (start-mtproxy.sh в†’ 1)." >&2
+    echo "Missing ${CONFIG_FILE}. Configure the proxy first (start-mtproxy.sh -> 1)." >&2
     exit 1
   }
 }
@@ -58,7 +58,7 @@ get_proxy_port() {
   local p
   p="$(cfg_get PORT)"
   [[ -n "$p" && "$p" =~ ^[0-9]+$ ]] || {
-    echo "Р’ РєРѕРЅС„РёРіРµ РЅРµС‚ РєРѕСЂСЂРµРєС‚РЅРѕРіРѕ PORT=" >&2
+    echo "Config has no valid PORT=" >&2
     exit 1
   }
   echo "$p"
@@ -111,8 +111,8 @@ start_of_local_day() {
 
 declare -A G_PENDING_START
 
-# РСЃС‚РѕС‡РЅРёРє вЂ” С‚РёРїРёС‡РЅС‹Р№ Р°РґСЂРµСЃ Docker/bridge (172.16вЂ“31) РёР»Рё IPv4 РІ IPv6 (::ffff:вЂ¦).
-# РќРµ СЃС‡РёС‚Р°РµРј В«Р°Р±РѕРЅРµРЅС‚РѕРјВ» РїСЂРѕРєСЃРё.
+# Skip typical Docker/bridge (172.16-31) or IPv4-mapped IPv6 (::ffff:...).
+# Do not count these as proxy "clients".
 skip_src_container_or_internal() {
   local s="${1,,}"
   [[ "$s" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] && return 0
@@ -121,7 +121,7 @@ skip_src_container_or_internal() {
   return 1
 }
 
-# РџРµСЂРІС‹Р№ РєРѕСЂС‚РµР¶ srcвЂ¦dstвЂ¦sportвЂ¦dport=PORT РІ СЃС‚СЂРѕРєРµ conntrack -L.
+# First match src...dst...sport...dport=PORT in a conntrack -L line.
 parse_list_line_client() {
   local line="$1" port="$2" lc
   lc="${line,,}"
@@ -133,14 +133,14 @@ parse_list_line_client() {
   printf '%s\t%s\n' "$src" "$sport"
 }
 
-# РћРїСЂРѕСЃ conntrack -L (СЃС‚Р°Р±РёР»СЊРЅРµРµ, С‡РµРј -E, Р·Р° NAT/Docker).
+# Poll conntrack -L (more stable than -E behind NAT/Docker).
 collect_poll_loop() {
   local proxy_port="$1"
   local poll_sec now key ip sport dur last
   poll_sec="${MTPROXY_POLL_SEC:-3}"
   [[ "$poll_sec" =~ ^[0-9]+$ ]] && ((poll_sec >= 1 && poll_sec <= 300)) || poll_sec=3
   declare -A active_last_seen
-  echo "[stats-mtproxy] РћРїСЂРѕСЃ conntrack -L РєР°Р¶РґС‹Рµ ${poll_sec}s, РїРѕСЂС‚ ${proxy_port} (РёРіРЅРѕСЂ src 172.16вЂ“31.*, 127.*, ::ffff:вЂ¦)." >&2
+  echo "[stats-mtproxy] Polling conntrack -L every ${poll_sec}s, dport ${proxy_port} (ignoring src 172.16-31.*, 127.*, ::ffff:...)." >&2
   while true; do
     now="$(now_epoch)"
     declare -A seen=()
@@ -208,16 +208,16 @@ collect_wrapper() {
   proxy_port="$(get_proxy_port)"
   ensure_statedir
   command -v conntrack >/dev/null 2>&1 || {
-    echo "РќРµ РЅР°Р№РґРµРЅР° РєРѕРјР°РЅРґР° conntrack. РЈСЃС‚Р°РЅРѕРІРёС‚Рµ РїР°РєРµС‚ Рё РїСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё Р·Р°РіСЂСѓР·РёС‚Рµ РјРѕРґСѓР»СЊ СЏРґСЂР°:" >&2
+    echo "conntrack not found. Install the package and load the kernel module if needed:" >&2
     echo "  Debian/Ubuntu: sudo apt update && sudo apt install -y conntrack" >&2
-    echo "  Fedora/RHEL:   sudo dnf install -y conntrack-tools   # РёР»Рё: yum install conntrack-tools" >&2
-    echo "  РњРѕРґСѓР»СЊ:        sudo modprobe nf_conntrack 2>/dev/null; lsmod | grep nf_conntrack" >&2
-    echo "  РЎРѕР±С‹С‚РёСЏ conntrack С‡Р°СЃС‚Рѕ С‚СЂРµР±СѓСЋС‚ root: sudo $0 collect" >&2
+    echo "  Fedora/RHEL:   sudo dnf install -y conntrack-tools   # or: yum install conntrack-tools" >&2
+    echo "  Module:        sudo modprobe nf_conntrack 2>/dev/null; lsmod | grep nf_conntrack" >&2
+    echo "  conntrack often needs root: sudo $0 collect" >&2
     exit 1
   }
-  echo "[stats-mtproxy] РџРѕСЂС‚ С…РѕСЃС‚Р°: ${proxy_port}. РџРёС€РµРј СЃРµСЃСЃРёРё РІ ${SESSIONS_FILE}" >&2
+  echo "[stats-mtproxy] Host listen port: ${proxy_port}. Writing sessions to ${SESSIONS_FILE}" >&2
   if [[ -n "${MTPROXY_COLLECT_EVENTS:-}" ]]; then
-    echo "[stats-mtproxy] Р РµР¶РёРј conntrack -E (СЌРєСЃРїРµСЂРёРјРµРЅС‚Р°Р»СЊРЅРѕ)." >&2
+    echo "[stats-mtproxy] conntrack -E mode (experimental)." >&2
     if command -v stdbuf >/dev/null 2>&1; then
       while IFS= read -r line; do
         run_collect_pipe "$proxy_port" "$line"
@@ -239,18 +239,18 @@ start_background() {
   logf="${STATEDIR}/collector.log"
   self="$(script_abspath)"
   command -v conntrack >/dev/null 2>&1 || {
-    echo "РЈСЃС‚Р°РЅРѕРІРёС‚Рµ conntrack (conntrack-tools), Р·Р°С‚РµРј РїРѕРІС‚РѕСЂРёС‚Рµ start." >&2
+    echo "Install conntrack (conntrack-tools), then run start again." >&2
     exit 1
   }
   if ! conntrack -L >/dev/null 2>&1; then
-    echo "conntrack РЅРµРґРѕСЃС‚СѓРїРµРЅ (РЅСѓР¶РЅС‹ РїСЂР°РІР° root / netlink). Р—Р°РїСѓСЃС‚РёС‚Рµ: sudo $0 start" >&2
+    echo "conntrack not accessible (need root / netlink). Run: sudo $0 start" >&2
     exit 1
   fi
   if [[ -f "$PID_FILE" ]]; then
     local old
     old="$(cat "$PID_FILE" 2>/dev/null || true)"
     if [[ -n "$old" ]] && kill -0 "$old" 2>/dev/null; then
-      echo "РЎР±РѕСЂС‰РёРє СѓР¶Рµ Р·Р°РїСѓС‰РµРЅ (PID $old)."
+      echo "Collector already running (PID $old)."
       exit 0
     fi
     rm -f "$PID_FILE"
@@ -261,27 +261,27 @@ start_background() {
   echo "$pid" >"$PID_FILE"
   sleep 0.5
   if ! kill -0 "$pid" 2>/dev/null; then
-    echo "РЎР±РѕСЂС‰РёРє СЃСЂР°Р·Сѓ Р·Р°РІРµСЂС€РёР»СЃСЏ. РџРѕСЃР»РµРґРЅРёРµ СЃС‚СЂРѕРєРё ${logf}:" >&2
+    echo "Collector exited immediately. Last lines of ${logf}:" >&2
     tail -n 25 "$logf" 2>/dev/null || true
     rm -f "$PID_FILE"
-    echo "РџРѕРґСЃРєР°Р·РєР°: sudo $0 diagnose" >&2
+    echo "Hint: sudo $0 diagnose" >&2
     exit 1
   fi
-  echo "РЎР±РѕСЂС‰РёРє Р·Р°РїСѓС‰РµРЅ, PID ${pid}, Р»РѕРі: $logf (РїРѕСЂС‚ ${proxy_port})"
+  echo "Collector started, PID ${pid}, log: $logf (port ${proxy_port})"
 }
 
 stop_background() {
   [[ -f "$PID_FILE" ]] || {
-    echo "PID-С„Р°Р№Р» РЅРµ РЅР°Р№РґРµРЅ."
+    echo "PID file not found."
     exit 0
   }
   local pid
   pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
     kill "$pid" 2>/dev/null || true
-    echo "РћСЃС‚Р°РЅРѕРІР»РµРЅ PID $pid"
+    echo "Stopped PID $pid"
   else
-    echo "РџСЂРѕС†РµСЃСЃ РЅРµ РЅР°Р№РґРµРЅ."
+    echo "Process not found."
   fi
   rm -f "$PID_FILE"
 }
@@ -291,14 +291,14 @@ collector_status() {
     local pid
     pid="$(cat "$PID_FILE" 2>/dev/null || true)"
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      echo "РЎР±РѕСЂС‰РёРє СЂР°Р±РѕС‚Р°РµС‚ (PID $pid)"
+      echo "Collector running (PID $pid)"
       return 0
     fi
     if [[ -n "$pid" ]]; then
-      echo "РЎР±РѕСЂС‰РёРє РЅРµ Р·Р°РїСѓС‰РµРЅ (РІ ${PID_FILE} Р·Р°РїРёСЃР°РЅ PID $pid вЂ” РїСЂРѕС†РµСЃСЃ Р·Р°РІРµСЂС€РёР»СЃСЏ)."
+      echo "Collector not running (${PID_FILE} lists PID $pid but process is gone)."
     fi
   else
-    echo "РЎР±РѕСЂС‰РёРє РЅРµ Р·Р°РїСѓС‰РµРЅ (РЅРµС‚ ${PID_FILE})."
+    echo "Collector not running (no ${PID_FILE})."
   fi
   return 1
 }
@@ -311,14 +311,14 @@ diagnose_main() {
     require_config || exit 1
     proxy_port="$(get_proxy_port)"
     logf="${STATEDIR}/collector.log"
-    echo "в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ stats-mtproxy diagnose в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ"
+    echo "======== stats-mtproxy diagnose ========"
     echo "CONFIG_FILE=${CONFIG_FILE}"
     echo "STATEDIR=${STATEDIR}"
-    echo "PORT РёР· РєРѕРЅС„РёРіР° (С…РѕСЃС‚): ${proxy_port}"
+    echo "PORT from config (host): ${proxy_port}"
     if [[ -f "$SESSIONS_FILE" ]]; then
-      echo "sessions.tsv: ${SESSIONS_FILE} ($(wc -c <"$SESSIONS_FILE") Р±Р°Р№С‚)"
+      echo "sessions.tsv: ${SESSIONS_FILE} ($(wc -c <"$SESSIONS_FILE") bytes)"
     else
-      echo "sessions.tsv: С„Р°Р№Р»Р° РµС‰С‘ РЅРµС‚"
+      echo "sessions.tsv: file does not exist yet"
     fi
     echo "EUID=${EUID:-} SUDO_UID=${SUDO_UID:-}"
     echo ""
@@ -326,32 +326,32 @@ diagnose_main() {
       if conntrack -L >/dev/null 2>&1; then
         echo "conntrack -L: OK"
         lines="$(conntrack -L -p tcp 2>/dev/null | grep "dport=${proxy_port}" | wc -l)"
-        echo "Р—Р°РїРёСЃРµР№ conntrack СЃ dport=${proxy_port} (СЃРµР№С‡Р°СЃ): ${lines}"
-        echo "РџСЂРёРјРµСЂ (РґРѕ 8 СЃС‚СЂРѕРє СЃ СЌС‚РёРј dport):"
-        conntrack -L -p tcp 2>/dev/null | grep "dport=${proxy_port}" | head -8 || echo "  (РїСѓСЃС‚Рѕ вЂ” РЅРµС‚ Р°РєС‚РёРІРЅС‹С… TCP РЅР° СЌС‚РѕС‚ РїРѕСЂС‚ РёР»Рё РґСЂСѓРіРѕРµ РёРјСЏ РїРѕР»РµР№)"
+        echo "conntrack entries with dport=${proxy_port} (now): ${lines}"
+        echo "Sample (up to 8 lines with this dport):"
+        conntrack -L -p tcp 2>/dev/null | grep "dport=${proxy_port}" | head -8 || echo "  (empty - no active TCP to this port or different field names)"
       else
-        echo "conntrack -L: РѕС‚РєР°Р· (РЅСѓР¶РµРЅ root). Р—Р°РїСѓСЃРє: sudo $0 diagnose"
+        echo "conntrack -L: denied (need root). Run: sudo $0 diagnose"
       fi
     else
-      echo "conntrack: РєРѕРјР°РЅРґР° РЅРµ РЅР°Р№РґРµРЅР° (apt install conntrack)"
+      echo "conntrack: command not found (apt install conntrack)"
     fi
     echo ""
     if command -v ss >/dev/null 2>&1; then
-      echo "РџСЂРѕСЃР»СѓС€РёРІР°РЅРёРµ РїРѕСЂС‚Р° ${proxy_port} (ss):"
-      ss -tlnp 2>/dev/null | grep -E ":${proxy_port}\\s" || echo "  (РЅРµС‚ LISTEN РЅР° :${proxy_port} РІ РІС‹РІРѕРґРµ ss вЂ” РїСЂРѕРІРµСЂСЊС‚Рµ Docker -p)"
+      echo "Listening on port ${proxy_port} (ss):"
+      ss -tlnp 2>/dev/null | grep -E ":${proxy_port}\\s" || echo "  (no LISTEN on :${proxy_port} in ss output - check Docker -p)"
     fi
     echo ""
     if [[ -f "$logf" ]]; then
-      echo "РҐРІРѕСЃС‚ ${logf}:"
+      echo "Tail of ${logf}:"
       tail -n 20 "$logf"
     else
-      echo "Р›РѕРі ${logf} РµС‰С‘ РЅРµ СЃРѕР·РґР°РІР°Р»СЃСЏ."
+      echo "Log ${logf} has not been created yet."
     fi
     echo ""
-    echo "РЎР±РѕСЂС‰РёРє РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ РѕРїСЂР°С€РёРІР°РµС‚ conntrack -L (РЅРµ -E); СЃС‚Р°СЂС‹Р№ СЂРµР¶РёРј: MTPROXY_COLLECT_EVENTS=1."
-    echo "Р•СЃР»Рё СЃР±РѕСЂС‰РёРє РїР°РґР°РµС‚: sudo $0 start  (РїРѕСЃР»Рµ conntrack-tools)."
-    echo "РџСѓСЃС‚РѕР№ РѕС‚С‡С‘С‚: РЅРµС‚ РІС…РѕРґСЏС‰РёС… СЃРµСЃСЃРёР№ РЅР° РїРѕСЂС‚ ${proxy_port} РїРѕСЃР»Рµ start (РёР»Рё С‚РѕР»СЊРєРѕ src 172.16вЂ“31 / 127.* вЂ” РѕС‚С„РёР»СЊС‚СЂРѕРІР°РЅС‹)."
-    echo "в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ"
+    echo "Collector polls conntrack -L by default (not -E); legacy mode: MTPROXY_COLLECT_EVENTS=1."
+    echo "If the collector dies: sudo $0 start  (after conntrack-tools)."
+    echo "Empty report: no inbound sessions on port ${proxy_port} after start (or only src 172.16-31 / 127.* - filtered out)."
+    echo "========"
   )
 }
 
@@ -375,20 +375,20 @@ report_main() {
 
   if [[ ! -s "$SESSIONS_FILE" ]]; then
     echo ""
-    echo "РџРѕРєР° РЅРµС‚ Р·Р°РїРёСЃРµР№ РІ ${SESSIONS_FILE}."
-    echo "Р—Р°РїСѓСЃС‚РёС‚Рµ СЃР±РѕСЂС‰РёРє (conntrack-tools), СЃ С‚РµРјРё Р¶Рµ РїСѓС‚СЏРјРё, С‡С‚Рѕ Рё РѕС‚С‡С‘С‚:"
-    echo "  ./stats-mtproxy.sh start   РёР»Рё   sudo ./stats-mtproxy.sh start"
-    echo "(РїРѕРґ sudo РґР°РЅРЅС‹Рµ РїРёС€СѓС‚СЃСЏ РІ РґРѕРјР°С€РЅРёР№ РєР°С‚Р°Р»РѕРі РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ, РµСЃР»Рё РµСЃС‚СЊ ~/mtproto_config.txt)."
-    echo "Р•СЃР»Рё СЂР°РЅРµРµ Р·Р°РїСѓСЃРєР°Р»Рё С‚РѕР»СЊРєРѕ sudo Р±РµР· СЌС‚РѕРіРѕ РїРѕРІРµРґРµРЅРёСЏ вЂ” РѕСЃС‚Р°РЅРѕРІРёС‚Рµ СЃС‚Р°СЂС‹Р№ РїСЂРѕС†РµСЃСЃ Рё Р·Р°РїСѓСЃС‚РёС‚Рµ start Р·Р°РЅРѕРІРѕ."
-    echo "Р”РёР°РіРЅРѕСЃС‚РёРєР°: ./stats-mtproxy.sh diagnose   РёР»Рё   sudo ./stats-mtproxy.sh diagnose"
+    echo "No data in ${SESSIONS_FILE} yet."
+    echo "Start the collector (conntrack-tools) with the same paths as this report:"
+    echo "  ./stats-mtproxy.sh start   or   sudo ./stats-mtproxy.sh start"
+    echo "(under sudo, data goes to the invoking user's home if ~/mtproto_config.txt exists there)."
+    echo "If you only ran sudo before without that behavior, stop the old process and start again."
+    echo "Diagnostics: ./stats-mtproxy.sh diagnose   or   sudo ./stats-mtproxy.sh diagnose"
     collector_status || true
     echo ""
     return 0
   fi
 
   echo ""
-  echo "РЎС‚Р°С‚РёСЃС‚РёРєР° РїРѕ IP (РїРѕСЂС‚ РїСЂРѕРєСЃРё РЅР° С…РѕСЃС‚Рµ: ${proxy_port})."
-  echo "в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ"
+  echo "Per-IP stats (proxy listen port on host: ${proxy_port})."
+  echo "=================================================================================="
 
   tmp="$(mktemp)" || exit 1
   awk -v now="$now" -v sod="$sod" -v d7="$d7" -v d30="$d30" '
@@ -418,7 +418,7 @@ report_main() {
   ' "$SESSIONS_FILE" | sort -t $'\t' -k1 >"$tmp"
 
   printf '%-42s %-20s %12s %12s %12s %12s\n' \
-    "IP" "РџРµСЂРІРѕРµ СЃРѕРµРґРёРЅРµРЅРёРµ" "РЎРµРіРѕРґРЅСЏ" "7 РґРЅРµР№" "30 РґРЅРµР№" "Р’СЃРµРіРѕ"
+    "IP" "First seen" "Today" "7 days" "30 days" "Total"
 
   local ip fts t d7c d30c tot ds
   while IFS=$'\t' read -r ip fts t d7c d30c tot; do
@@ -432,7 +432,7 @@ report_main() {
   done <"$tmp"
   rm -f "$tmp"
 
-  echo "в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ"
+  echo "=================================================================================="
   collector_status || true
   echo ""
 }
@@ -447,45 +447,45 @@ reset_stats_main() {
       all | a) mode=all ;;
       -y | --yes) yes=1 ;;
       -h | --help)
-        echo "reset trim [ -y ] вЂ” СѓР±СЂР°С‚СЊ РёР· С„Р°Р№Р»Р° СЃС‚СЂРѕРєРё СЃ В«СЃР»СѓР¶РµР±РЅС‹РјРёВ» IP (СЃРј. README)."
-        echo "reset all  [ -y ] вЂ” Р±СЌРєР°Рї sessions.tsv Рё РѕР±РЅСѓР»РµРЅРёРµ."
+        echo "reset trim [ -y ] - remove rows with internal IPs only (see README)."
+        echo "reset all  [ -y ] - backup sessions.tsv and wipe it."
         return 0
         ;;
       *)
-        echo "РќРµРёР·РІРµСЃС‚РЅС‹Р№ Р°СЂРіСѓРјРµРЅС‚ reset: $a" >&2
-        echo "РСЃРїРѕР»СЊР·СѓР№С‚Рµ: $0 reset trim|all [ -y ]" >&2
+        echo "Unknown reset argument: $a" >&2
+        echo "Use: $0 reset trim|all [ -y ]" >&2
         exit 1
         ;;
     esac
   done
   [[ -n "$mode" ]] || {
-    echo "РЈРєР°Р¶РёС‚Рµ СЂРµР¶РёРј: $0 reset trim|all [ -y ]" >&2
+    echo "Specify mode: $0 reset trim|all [ -y ]" >&2
     exit 1
   }
   if [[ ! -f "$SESSIONS_FILE" ]] || [[ ! -s "$SESSIONS_FILE" ]]; then
-    echo "Р¤Р°Р№Р» ${SESSIONS_FILE} РїСѓСЃС‚ РёР»Рё РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚ вЂ” СЃР±СЂР°СЃС‹РІР°С‚СЊ РЅРµС‡РµРіРѕ."
+    echo "${SESSIONS_FILE} is empty or missing - nothing to reset."
     return 0
   fi
   if [[ "$yes" != 1 ]]; then
     local prompt
     if [[ "$mode" == trim ]]; then
-      prompt="РЈРґР°Р»РёС‚СЊ РёР· ${SESSIONS_FILE} С‚РѕР»СЊРєРѕ СЃС‚СЂРѕРєРё Docker/127 (Р±СЌРєР°Рї .bak.РґР°С‚Р°)? [y/N] "
+      prompt="Remove from ${SESSIONS_FILE} only Docker/127 rows (backup .bak.timestamp)? [y/N] "
     else
-      prompt="РЎРґРµР»Р°С‚СЊ Р±СЌРєР°Рї Рё РћР‘РќРЈР›РРўР¬ РІРµСЃСЊ ${SESSIONS_FILE}? [y/N] "
+      prompt="Backup and WIPE entire ${SESSIONS_FILE}? [y/N] "
     fi
     read -r -p "$prompt" _c || true
     [[ "${_c:-}" == y || "${_c:-}" == Y ]] || {
-      echo "РћС‚РјРµРЅРµРЅРѕ."
+      echo "Cancelled."
       exit 0
     }
   fi
   local bak
   bak="${SESSIONS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
   cp -a "$SESSIONS_FILE" "$bak" || {
-    echo "РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ Р±СЌРєР°Рї ${bak}" >&2
+    echo "Could not create backup ${bak}" >&2
     exit 1
   }
-  echo "Р‘СЌРєР°Рї: ${bak}"
+  echo "Backup: ${bak}"
   if [[ "$mode" == trim ]]; then
     awk 'NF >= 4 {
       ip = $3
@@ -495,11 +495,11 @@ reset_stats_main() {
       print
     }' "$bak" >"${SESSIONS_FILE}.tmp" && mv "${SESSIONS_FILE}.tmp" "$SESSIONS_FILE"
     chmod 600 "$SESSIONS_FILE" 2>/dev/null || true
-    echo "Р“РѕС‚РѕРІРѕ: СѓРґР°Р»РµРЅС‹ СЃС‚СЂРѕРєРё СЃ РѕС‚С„РёР»СЊС‚СЂРѕРІР°РЅРЅС‹РјРё IP."
+    echo "Done: removed rows with filtered IPs."
   else
     : >"$SESSIONS_FILE"
     chmod 600 "$SESSIONS_FILE" 2>/dev/null || true
-    echo "Р“РѕС‚РѕРІРѕ: С„Р°Р№Р» РѕР±РЅСѓР»С‘РЅ."
+    echo "Done: file wiped."
   fi
 }
 

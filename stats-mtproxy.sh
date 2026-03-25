@@ -258,10 +258,11 @@ collect_poll_loop() {
     for key in "${_keys[@]}"; do
       if [[ -z "${seen[$key]:-}" ]]; then
         st="${active_first_seen[$key]:-}"
-        last="${active_last_seen[$key]:-}"
-        if [[ -n "$st" && -n "$last" ]]; then
+        # Закрываем сессию моментом текущего опроса: так учитываются и короткие
+        # потоки, которые успели попасть только в один снимок conntrack/ss.
+        if [[ -n "$st" ]]; then
           ip="${key%|*}"
-          append_session_row "$st" "$last" "$ip"
+          append_session_row "$st" "$now" "$ip"
         fi
         unset 'active_last_seen[$key]'
         unset 'active_first_seen[$key]'

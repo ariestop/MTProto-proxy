@@ -596,6 +596,7 @@ stats_submenu() {
   echo "3) Остановить сборщик"
   echo "4) Статус сборщика"
   echo "5) Диагностика (пути, conntrack, лог)"
+  echo "6) Сброс sessions.tsv (бэкап: trim или all)"
   echo "0) Назад в главное меню"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   read -r -p "Выбор: " sub
@@ -625,6 +626,19 @@ stats_submenu() {
       ;;
     5)
       [[ -f "$STATS_SCRIPT" ]] && bash "$STATS_SCRIPT" diagnose || warn "Не найден ${STATS_SCRIPT}"
+      ;;
+    6)
+      if [[ -f "$STATS_SCRIPT" ]]; then
+        echo "1) trim — убрать строки Docker/127   2) all — обнулить весь файл   0) отмена"
+        read -r -p "Выбор: " rs
+        case "$rs" in
+          1) bash "$STATS_SCRIPT" reset trim ;;
+          2) bash "$STATS_SCRIPT" reset all ;;
+          *) warn "Отменено" ;;
+        esac
+      else
+        warn "Не найден ${STATS_SCRIPT}"
+      fi
       ;;
     0 | "") ;;
     *) warn "Неверный пункт" ;;

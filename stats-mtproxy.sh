@@ -24,15 +24,20 @@ SESSIONS_FILE="${STATEDIR}/sessions.tsv"
 PID_FILE="${STATEDIR}/collector.pid"
 
 usage() {
-  echo "Использование: $0 {report|collect|start|stop|status|diagnose}"
+  echo "Использование: $0 {report|collect|start|stop|status|diagnose|reset}"
   echo "  report    — таблица по IP"
   echo "  collect   — сборщик (по умолчанию опрос conntrack -L; см. MTPROXY_COLLECT_EVENTS)"
   echo "  start     — фон, лог ${STATEDIR}/collector.log"
   echo "  stop      — остановить фоновый сборщик"
   echo "  status    — запущен ли сборщик"
   echo "  diagnose  — пути, порт, conntrack, подсказки (если нет данных)"
+  echo "  reset trim|all [ -y ]  — см. ниже"
   echo "Опционально: MTPROXY_CONFIG_FILE, MTPROXY_STATS_DIR; MTPROXY_POLL_SEC (сек, по умолчанию 3);"
   echo "  MTPROXY_COLLECT_EVENTS=1 — старый режим conntrack -E (с Docker часто пусто)."
+  echo ""
+  echo "Сброс ${SESSIONS_FILE}:"
+  echo "  $0 reset trim [ -y ]  — удалить только строки с IP Docker/127 (::ffff:172.16–31)"
+  echo "  $0 reset all  [ -y ]  — бэкап и пустой файл (вся история сессий)"
   exit "${1:-0}"
 }
 
@@ -434,6 +439,72 @@ report_main() {
   echo ""
 }
 
+reset_stats_main() {
+  require_config
+  ensure_statedir
+  local mode="" yes=0 a
+  for a in "$@"; do
+    case "$a" in
+      trim | t) mode=trim ;;
+      all | a) mode=all ;;
+      -y | --yes) yes=1 ;;
+      -h | --help)
+        echo "reset trim [ -y ] — убрать из файла строки с «служебными» IP (см. README)."
+        echo "reset all  [ -y ] — бэкап sessions.tsv и обнуление."
+        return 0
+        ;;
+      *)
+        echo "Неизвестный аргумент reset: $a" >&2
+        echo "Используйте: $0 reset trim|all [ -y ]" >&2
+        exit 1
+        ;;
+    esac
+  done
+  [[ -n "$mode" ]] || {
+    echo "Укажите режим: $0 reset trim|all [ -y ]" >&2
+    exit 1
+  }
+  if [[ ! -f "$SESSIONS_FILE" ]] || [[ ! -s "$SESSIONS_FILE" ]]; then
+    echo "Файл ${SESSIONS_FILE} пуст или отсутствует — сбрасывать нечего."
+    return 0
+  fi
+  if [[ "$yes" != 1 ]]; then
+    local prompt
+    if [[ "$mode" == trim ]]; then
+      prompt="Удалить из ${SESSIONS_FILE} только строки Docker/127 (бэкап .bak.дата)? [y/N] "
+    else
+      prompt="Сделать бэкап и ОБНУЛИТЬ весь ${SESSIONS_FILE}? [y/N] "
+    fi
+    read -r -p "$prompt" _c || true
+    [[ "${_c:-}" == y || "${_c:-}" == Y ]] || {
+      echo "Отменено."
+      exit 0
+    }
+  fi
+  local bak
+  bak="${SESSIONS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+  cp -a "$SESSIONS_FILE" "$bak" || {
+    echo "Не удалось создать бэкап ${bak}" >&2
+    exit 1
+  }
+  echo "Бэкап: ${bak}"
+  if [[ "$mode" == trim ]]; then
+    awk 'NF >= 4 {
+      ip = $3
+      if (ip ~ /^172\.(1[6-9]|2[0-9]|3[0-1])\./) next
+      if (ip ~ /^127\./) next
+      if (ip ~ /^::ffff:172\.(1[6-9]|2[0-9]|3[0-1])\./) next
+      print
+    }' "$bak" >"${SESSIONS_FILE}.tmp" && mv "${SESSIONS_FILE}.tmp" "$SESSIONS_FILE"
+    chmod 600 "$SESSIONS_FILE" 2>/dev/null || true
+    echo "Готово: удалены строки с отфильтрованными IP."
+  else
+    : >"$SESSIONS_FILE"
+    chmod 600 "$SESSIONS_FILE" 2>/dev/null || true
+    echo "Готово: файл обнулён."
+  fi
+}
+
 main_cmd="${1:-}"
 case "$main_cmd" in
   report) report_main ;;
@@ -442,6 +513,10 @@ case "$main_cmd" in
   stop) stop_background ;;
   status) collector_status ;;
   diagnose) diagnose_main ;;
+  reset)
+    shift
+    reset_stats_main "$@"
+    ;;
   -h | --help | help) usage 0 ;;
   *) usage 1 ;;
 esac

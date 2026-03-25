@@ -137,6 +137,14 @@ chmod +x stats-mtproxy.sh
 ./stats-mtproxy.sh diagnose # пути, conntrack, хвост лога (при сбоях — sudo ./stats-mtproxy.sh diagnose)
 ```
 
+**Сброс `sessions.tsv`** (перед этим создаётся бэкап `sessions.tsv.bak.ГГГГММДД_ччммсс` в том же каталоге):
+
+```bash
+./stats-mtproxy.sh reset trim   # удалить только строки с IP Docker 172.16–31, 127.*, ::ffff:172…
+./stats-mtproxy.sh reset all      # обнулить весь файл (чистая история)
+# без вопроса подтверждения: добавьте -y в конец
+```
+
 То же из меню **`./start-mtproxy.sh`** → п. **9**.
 
 ## Полезные команды

@@ -282,8 +282,11 @@ collect_poll_loop() {
       [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
       if [[ -n "${active_last_seen[$key]:-}" ]]; then
         append_session_row "${active_last_seen[$key]}" "$now" "$ip"
+        active_last_seen["$key"]="$now"
+      else
+        append_session_row "$now" "$now" "$ip"
+        active_last_seen["$key"]="$now"
       fi
-      active_last_seen["$key"]="$now"
     done < <(conntrack -L -p tcp -n 2>/dev/null || true)
 
     if [[ -z "${MTPROXY_NO_SS:-}" ]]; then
@@ -295,8 +298,11 @@ collect_poll_loop() {
         [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
         if [[ -n "${active_last_seen[$key]:-}" ]]; then
           append_session_row "${active_last_seen[$key]}" "$now" "$ip"
+          active_last_seen["$key"]="$now"
+        else
+          append_session_row "$now" "$now" "$ip"
+          active_last_seen["$key"]="$now"
         fi
-        active_last_seen["$key"]="$now"
       done < <(list_ss_established_peers_on_port "$proxy_port")
     fi
 
@@ -309,8 +315,11 @@ collect_poll_loop() {
         [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
         if [[ -n "${active_last_seen[$key]:-}" ]]; then
           append_session_row "${active_last_seen[$key]}" "$now" "$ip"
+          active_last_seen["$key"]="$now"
+        else
+          append_session_row "$now" "$now" "$ip"
+          active_last_seen["$key"]="$now"
         fi
-        active_last_seen["$key"]="$now"
       done < <(list_docker_ss_established_peers_on_port "$proxy_port")
     fi
 
@@ -368,7 +377,8 @@ collect_wrapper() {
   ensure_statedir
   # Если сборщик завершится (ошибка, сигнал, OOM-kill и т.п.), запишем причину в лог.
   # Это особенно важно при запуске через start (nohup), где иначе видно только «процесс умер».
-  trap 'rc=$?; echo "[stats-mtproxy] Сборщик завершился: rc=${rc}, line=${BASH_LINENO[0]}, cmd=${BASH_COMMAND}" >&2' EXIT
+  _main_bashpid="${BASHPID:-}"
+  trap 'rc=$?; if [[ -n "${_main_bashpid:-}" && "${BASHPID:-}" != "$_main_bashpid" ]]; then exit "$rc"; fi; echo "[stats-mtproxy] Сборщик завершился: rc=${rc}, line=${BASH_LINENO[0]}, cmd=${BASH_COMMAND}" >&2' EXIT
   command -v conntrack >/dev/null 2>&1 || {
     echo "Команда conntrack не найдена. Установите пакет и при необходимости загрузите модуль ядра:" >&2
     echo "  Debian/Ubuntu: sudo apt update && sudo apt install -y conntrack" >&2

@@ -90,10 +90,6 @@ sudo ./stats-mtproxy.sh reset all  -y   # бэкап и полный сброс 
 
 История изменений проекта — в [VERSION.md](VERSION.md).
 
-## Для разработчиков и агентов
-
-- Текст и документация в репозитории — **русский язык**, **UTF‑8 без BOM**, без «кракозябр».
-
 ## Ссылки
 
 - Upstream MTProxy: [TelegramMessenger/MTProxy](https://github.com/TelegramMessenger/MTProxy)

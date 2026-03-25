@@ -208,24 +208,14 @@ list_ss_established_peers_on_port() {
   done < <(ss -tn state established 2>/dev/null | awk '$1 ~ /^ESTAB/ {print $4 "\t" $5}')
 }
 
-# Обновление seen / active_last_seen и запись интервалов в sessions.tsv
-accumulate_client_flow() {
-  local now="$1" ip="$2" sport="$3"
-  local -n seen_r=$4
-  local -n active_r=$5
-  local key last dur
-  key="${ip}|${sport}"
-  seen_r["$key"]=1
-  if [[ -n "${active_r[$key]:-}" ]]; then
-    last="${active_r[$key]}"
-    dur=$((now - last))
-    if ((dur >= 1 && dur < 864000)); then
-      mkdir -p "$STATEDIR"
-      chmod 700 "$STATEDIR" 2>/dev/null || true
-      printf '%s\t%s\t%s\t%s\n' "$last" "$now" "$ip" "$dur" >>"$SESSIONS_FILE"
-    fi
+append_session_row() {
+  local st="$1" en="$2" ip="$3"
+  local dur=$((en - st))
+  if ((dur >= 1 && dur < 864000)); then
+    mkdir -p "$STATEDIR"
+    chmod 700 "$STATEDIR" 2>/dev/null || true
+    printf '%s\t%s\t%s\t%s\n' "$st" "$en" "$ip" "$dur" >>"$SESSIONS_FILE"
   fi
-  active_r["$key"]="$now"
 }
 
 # Опрос conntrack -L (стабильнее, чем -E, за NAT/Docker).
@@ -234,6 +224,7 @@ collect_poll_loop() {
   local poll_sec now
   poll_sec="${MTPROXY_POLL_SEC:-3}"
   [[ "$poll_sec" =~ ^[0-9]+$ ]] && ((poll_sec >= 1 && poll_sec <= 300)) || poll_sec=3
+  declare -A active_first_seen
   declare -A active_last_seen
   load_local_ipv4s || true
   echo "[stats-mtproxy] Опрос каждые ${poll_sec}с: conntrack -L + ss ESTAB на :${proxy_port} (локальные IP для ct: ${G_LOCAL_IPV4S[*]:-?}; без ss: MTPROXY_NO_SS=1)." >&2
@@ -245,14 +236,20 @@ collect_poll_loop() {
       [[ -n "$line" ]] || continue
       parsed="$(parse_list_line_client "$line" "$proxy_port" 2>/dev/null)" || continue
       IFS=$'\t' read -r ip sport <<<"$parsed"
-      accumulate_client_flow "$now" "$ip" "$sport" seen active_last_seen
+      key="${ip}|${sport}"
+      seen["$key"]=1
+      [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
+      active_last_seen["$key"]="$now"
     done < <(conntrack -L -p tcp -n 2>/dev/null || true)
 
     if [[ -z "${MTPROXY_NO_SS:-}" ]]; then
       while IFS=$'\t' read -r ip sport || [[ -n "$ip" ]]; do
         [[ -n "$ip" ]] || continue
         skip_src_container_or_internal "$ip" && continue
-        accumulate_client_flow "$now" "$ip" "$sport" seen active_last_seen
+        key="${ip}|${sport}"
+        seen["$key"]=1
+        [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
+        active_last_seen["$key"]="$now"
       done < <(list_ss_established_peers_on_port "$proxy_port")
     fi
 
@@ -260,7 +257,14 @@ collect_poll_loop() {
     _keys=("${!active_last_seen[@]}")
     for key in "${_keys[@]}"; do
       if [[ -z "${seen[$key]:-}" ]]; then
+        st="${active_first_seen[$key]:-}"
+        last="${active_last_seen[$key]:-}"
+        if [[ -n "$st" && -n "$last" ]]; then
+          ip="${key%|*}"
+          append_session_row "$st" "$last" "$ip"
+        fi
         unset 'active_last_seen[$key]'
+        unset 'active_first_seen[$key]'
       fi
     done
     sleep "$poll_sec"

@@ -1,0 +1,7 @@
+*.tar.gz
+mtproxy-image-*.tar.gz
+.DS_Store
+
+# Cursor
+.cursor/
+AGENTS.md

@@ -9,6 +9,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P 2>/dev/null || pwd)"
+STATS_SCRIPT="${SCRIPT_DIR}/stats-mtproxy.sh"
+
 CONTAINER_NAME="mtproto-proxy"
 CONFIG_FILE="${HOME}/mtproto_config.txt"
 PREF_IMAGE_FILE="${HOME}/.mtproxy_docker_image"
@@ -583,6 +586,48 @@ delete_proxy() {
   echo
 }
 
+stats_submenu() {
+  echo
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo " Статистика абонентов (IP, время сессий)"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "1) Показать отчёт"
+  echo "2) Запустить сборщик в фоне (Linux, conntrack)"
+  echo "3) Остановить сборщик"
+  echo "4) Статус сборщика"
+  echo "0) Назад в главное меню"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  read -r -p "Выбор: " sub
+  case "$sub" in
+    1)
+      if [[ -f "$STATS_SCRIPT" ]]; then
+        bash "$STATS_SCRIPT" report
+      else
+        warn "Не найден ${STATS_SCRIPT}"
+      fi
+      ;;
+    2)
+      if [[ -f "$STATS_SCRIPT" ]]; then
+        if [[ "$(uname -s 2>/dev/null)" != Linux ]]; then
+          warn "Сборщик рассчитан на Linux (conntrack / nf_conntrack)."
+        fi
+        bash "$STATS_SCRIPT" start || true
+      else
+        warn "Не найден ${STATS_SCRIPT}"
+      fi
+      ;;
+    3)
+      [[ -f "$STATS_SCRIPT" ]] && bash "$STATS_SCRIPT" stop || warn "Не найден ${STATS_SCRIPT}"
+      ;;
+    4)
+      [[ -f "$STATS_SCRIPT" ]] && bash "$STATS_SCRIPT" status || warn "Не найден ${STATS_SCRIPT}"
+      ;;
+    0 | "") ;;
+    *) warn "Неверный пункт" ;;
+  esac
+  echo
+}
+
 show_menu() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo " MTProto Proxy Manager"
@@ -595,6 +640,7 @@ show_menu() {
   echo "6) Статус"
   echo "7) Логи"
   echo "8) Образ Docker (Hub / локальная сборка)"
+  echo "9) Статистика абонентов"
   echo "0) Выход"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
@@ -612,6 +658,7 @@ main() {
       6) show_status ;;
       7) show_logs ;;
       8) choose_docker_image ;;
+      9) stats_submenu ;;
       0)
         echo "Выход."
         exit 0

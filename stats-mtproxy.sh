@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Сбор статистики по TCP к порту прокси на хосте (conntrack).
-# Устройство / имя устройства MTProto-прокси не видит (шифрование).
 set -euo pipefail
 
 CONFIG_FILE="${HOME}/mtproto_config.txt"
@@ -121,7 +120,7 @@ collect_wrapper() {
     echo "Нужна команда conntrack (пакет conntrack-tools), модуль nf_conntrack." >&2
     exit 1
   }
-  echo "[mtproxy-stats] Порт хоста: ${proxy_port}. Пишем сессии в ${SESSIONS_FILE}" >&2
+  echo "[stats-mtproxy] Порт хоста: ${proxy_port}. Пишем сессии в ${SESSIONS_FILE}" >&2
   # Без подпроцесса в пайпе — иначе теряется G_PENDING_START
   if command -v stdbuf >/dev/null 2>&1; then
     while IFS= read -r line; do
@@ -204,7 +203,7 @@ report_main() {
   if [[ ! -s "$SESSIONS_FILE" ]]; then
     echo ""
     echo "Пока нет записей в ${SESSIONS_FILE}."
-    echo "На Linux-сервере: chmod +x mtproxy-stats.sh && ./mtproxy-stats.sh start"
+    echo "На Linux-сервере: chmod +x stats-mtproxy.sh && ./stats-mtproxy.sh start"
     echo "Нужны conntrack-tools; учёт с момента запуска сборщика."
     collector_status || true
     echo ""
@@ -213,8 +212,7 @@ report_main() {
 
   echo ""
   echo "Статистика по IP (порт прокси на хосте: ${proxy_port})."
-  echo "Устройство / имя: н/д — MTProto не раскрывает клиент. Один IP может быть NAT."
-  echo "────────────────────────────────────────────────────────────────────────────────────────────────────"
+  echo "────────────────────────────────────────────────────────────────────────────────────────"
 
   tmp="$(mktemp)" || exit 1
   awk -v now="$now" -v sod="$sod" -v d7="$d7" -v d30="$d30" '
@@ -240,8 +238,8 @@ report_main() {
     }
   ' "$SESSIONS_FILE" | sort -t $'\t' -k1 >"$tmp"
 
-  printf '%-42s %-20s %-6s %-6s %12s %12s %12s %12s\n' \
-    "IP" "Первое соединение" "Устр." "Имя" "Сегодня" "7 дней" "30 дней" "Всего"
+  printf '%-42s %-20s %12s %12s %12s %12s\n' \
+    "IP" "Первое соединение" "Сегодня" "7 дней" "30 дней" "Всего"
 
   local ip fts t d7c d30c tot ds
   while IFS=$'\t' read -r ip fts t d7c d30c tot; do
@@ -250,12 +248,12 @@ report_main() {
     else
       ds="$fts"
     fi
-    printf '%-42s %-20s %-6s %-6s %12s %12s %12s %12s\n' \
-      "$ip" "$ds" "н/д" "н/д" "$(fmt_duration "$t")" "$(fmt_duration "$d7c")" "$(fmt_duration "$d30c")" "$(fmt_duration "$tot")"
+    printf '%-42s %-20s %12s %12s %12s %12s\n' \
+      "$ip" "$ds" "$(fmt_duration "$t")" "$(fmt_duration "$d7c")" "$(fmt_duration "$d30c")" "$(fmt_duration "$tot")"
   done <"$tmp"
   rm -f "$tmp"
 
-  echo "────────────────────────────────────────────────────────────────────────────────────────────────────"
+  echo "────────────────────────────────────────────────────────────────────────────────────────"
   collector_status || true
   echo ""
 }

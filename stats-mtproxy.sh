@@ -65,6 +65,14 @@ get_proxy_port() {
   echo "$p"
 }
 
+get_proxy_server_ip() {
+  require_config
+  local s
+  s="$(cfg_get SERVER)"
+  [[ -n "$s" ]] || return 1
+  echo "$s"
+}
+
 ensure_statedir() {
   mkdir -p "$STATEDIR"
   chmod 700 "$STATEDIR" 2>/dev/null || true
@@ -112,24 +120,65 @@ start_of_local_day() {
 
 declare -A G_PENDING_START
 
-# Пропускаем служебные адреса Docker/bridge (172.16-31) и IPv4 в IPv6 (::ffff:...).
+# Пропускаем служебные адреса Docker/bridge (172.16-31, 172.17) и IPv4 в IPv6 (::ffff:...).
 # Такие источники не считаем клиентами прокси.
 skip_src_container_or_internal() {
   local s="${1,,}"
   [[ "$s" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] && return 0
+  [[ "$s" =~ ^172\.17\. ]] && return 0
   [[ "$s" =~ ^::ffff:172\.(1[6-9]|2[0-9]|3[0-1])\. ]] && return 0
   [[ "$s" =~ ^127\. ]] && return 0
   return 1
 }
 
-# Берём первое вхождение src...dst...sport...dport=PORT в строке conntrack -L.
+# Собираем множество локальных IPv4 адресов хоста, чтобы отличать входящие соединения
+# к опубликованному порту прокси от исходящих соединений прокси к внешним IP:443.
+#
+# Порядок:
+# - MTPROXY_LOCAL_IPS="ip1 ip2 ..." (если задано)
+# - ip -o -4 addr show scope global (если доступно)
+# - SERVER из mtproto_config.txt (как запасной вариант)
+declare -a G_LOCAL_IPV4S=()
+load_local_ipv4s() {
+  local x
+  G_LOCAL_IPV4S=()
+  if [[ -n "${MTPROXY_LOCAL_IPS:-}" ]]; then
+    # shellcheck disable=SC2206
+    G_LOCAL_IPV4S=(${MTPROXY_LOCAL_IPS})
+    return 0
+  fi
+  if command -v ip >/dev/null 2>&1; then
+    while IFS= read -r x || [[ -n "$x" ]]; do
+      [[ -n "$x" ]] || continue
+      G_LOCAL_IPV4S+=("$x")
+    done < <(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+    [[ "${#G_LOCAL_IPV4S[@]}" -gt 0 ]] && return 0
+  fi
+  if x="$(get_proxy_server_ip 2>/dev/null)"; then
+    [[ "$x" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && G_LOCAL_IPV4S+=("$x")
+  fi
+  return 0
+}
+
+is_local_ipv4() {
+  local ip="$1" x
+  for x in "${G_LOCAL_IPV4S[@]}"; do
+    [[ "$ip" == "$x" ]] && return 0
+  done
+  return 1
+}
+
+# Берём кортеж клиента из строки conntrack -L.
+# Считаем "клиентом" только входящее соединение, где dst=<локальный IP хоста> и dport=PORT.
 parse_list_line_client() {
   local line="$1" port="$2" lc
   lc="${line,,}"
-  [[ "$lc" =~ src=([^[:space:]]+)[[:space:]]+dst=[^[:space:]]+[[:space:]]+sport=([0-9]+)[[:space:]]+dport=(${port})([^0-9]|$) ]] || return 1
-  local src sport
+  [[ "$lc" =~ src=([^[:space:]]+)[[:space:]]+dst=([^[:space:]]+)[[:space:]]+sport=([0-9]+)[[:space:]]+dport=(${port})([^0-9]|$) ]] || return 1
+  local src dst sport
   src="${BASH_REMATCH[1]}"
-  sport="${BASH_REMATCH[2]}"
+  dst="${BASH_REMATCH[2]}"
+  sport="${BASH_REMATCH[3]}"
+  is_local_ipv4 "$dst" || return 1
   skip_src_container_or_internal "$src" && return 1
   printf '%s\t%s\n' "$src" "$sport"
 }
@@ -141,7 +190,8 @@ collect_poll_loop() {
   poll_sec="${MTPROXY_POLL_SEC:-3}"
   [[ "$poll_sec" =~ ^[0-9]+$ ]] && ((poll_sec >= 1 && poll_sec <= 300)) || poll_sec=3
   declare -A active_last_seen
-  echo "[stats-mtproxy] Опрос conntrack -L каждые ${poll_sec}с, dport ${proxy_port} (игнор src 172.16-31.*, 127.*, ::ffff:...)." >&2
+  load_local_ipv4s || true
+  echo "[stats-mtproxy] Опрос conntrack -L каждые ${poll_sec}с, dport ${proxy_port} (локальные IP: ${G_LOCAL_IPV4S[*]:-?}; игнор src 172.16-31.*, 172.17.*, 127.*, ::ffff:...)." >&2
   while true; do
     now="$(now_epoch)"
     declare -A seen=()

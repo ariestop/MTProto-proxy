@@ -35,6 +35,8 @@ usage() {
   echo "  reset trim|all [ -y ]  - см. ниже"
   echo "Опционально: MTPROXY_CONFIG_FILE, MTPROXY_STATS_DIR; MTPROXY_POLL_SEC (секунды, по умолчанию 3);"
   echo "  MTPROXY_COLLECT_EVENTS=1 - старый режим conntrack -E (с Docker часто пусто)."
+  echo "  MTPROXY_LOCAL_IPS=\"a b\" - явный список локальных IPv4 для conntrack."
+  echo "  MTPROXY_NO_SS=1 - не опрашивать ss (только conntrack)."
   echo ""
   echo "Сброс ${SESSIONS_FILE}:"
   echo "  $0 reset trim [ -y ]  - удалить только строки с Docker/127 IP (::ffff:172.16-31)"
@@ -183,15 +185,58 @@ parse_list_line_client() {
   printf '%s\t%s\n' "$src" "$sport"
 }
 
+# Пиры ESTAB к локальному :PORT (docker-proxy при -p 443:443). По одной строке: ip<TAB>sport
+list_ss_established_peers_on_port() {
+  local port="$1"
+  local local_a peer lp ip sport
+  [[ -n "$port" ]] || return 0
+  command -v ss >/dev/null 2>&1 || return 0
+  while IFS=$'\t' read -r local_a peer || [[ -n "$local_a" ]]; do
+    [[ -n "$local_a" ]] || continue
+    lp="${local_a##*:}"
+    [[ "$lp" == "$port" ]] || continue
+    [[ -n "$peer" ]] || continue
+    if [[ "$peer" =~ ^\[([^]]+)\]:(.+)$ ]]; then
+      ip="[${BASH_REMATCH[1]}]"
+      sport="${BASH_REMATCH[2]}"
+    else
+      ip="${peer%:*}"
+      sport="${peer##*:}"
+    fi
+    [[ -n "$ip" && -n "$sport" ]] || continue
+    printf '%s\t%s\n' "$ip" "$sport"
+  done < <(ss -tn state established 2>/dev/null | awk '$1 ~ /^ESTAB/ {print $4 "\t" $5}')
+}
+
+# Обновление seen / active_last_seen и запись интервалов в sessions.tsv
+accumulate_client_flow() {
+  local now="$1" ip="$2" sport="$3"
+  local -n seen_r=$4
+  local -n active_r=$5
+  local key last dur
+  key="${ip}|${sport}"
+  seen_r["$key"]=1
+  if [[ -n "${active_r[$key]:-}" ]]; then
+    last="${active_r[$key]}"
+    dur=$((now - last))
+    if ((dur >= 1 && dur < 864000)); then
+      mkdir -p "$STATEDIR"
+      chmod 700 "$STATEDIR" 2>/dev/null || true
+      printf '%s\t%s\t%s\t%s\n' "$last" "$now" "$ip" "$dur" >>"$SESSIONS_FILE"
+    fi
+  fi
+  active_r["$key"]="$now"
+}
+
 # Опрос conntrack -L (стабильнее, чем -E, за NAT/Docker).
 collect_poll_loop() {
   local proxy_port="$1"
-  local poll_sec now key ip sport dur last
+  local poll_sec now
   poll_sec="${MTPROXY_POLL_SEC:-3}"
   [[ "$poll_sec" =~ ^[0-9]+$ ]] && ((poll_sec >= 1 && poll_sec <= 300)) || poll_sec=3
   declare -A active_last_seen
   load_local_ipv4s || true
-  echo "[stats-mtproxy] Опрос conntrack -L каждые ${poll_sec}с, dport ${proxy_port} (локальные IP: ${G_LOCAL_IPV4S[*]:-?}; игнор src 172.16-31.*, 172.17.*, 127.*, ::ffff:...)." >&2
+  echo "[stats-mtproxy] Опрос каждые ${poll_sec}с: conntrack -L + ss ESTAB на :${proxy_port} (локальные IP для ct: ${G_LOCAL_IPV4S[*]:-?}; без ss: MTPROXY_NO_SS=1)." >&2
   while true; do
     now="$(now_epoch)"
     declare -A seen=()
@@ -200,19 +245,16 @@ collect_poll_loop() {
       [[ -n "$line" ]] || continue
       parsed="$(parse_list_line_client "$line" "$proxy_port" 2>/dev/null)" || continue
       IFS=$'\t' read -r ip sport <<<"$parsed"
-      key="${ip}|${sport}"
-      seen["$key"]=1
-      if [[ -n "${active_last_seen[$key]:-}" ]]; then
-        last="${active_last_seen[$key]}"
-        dur=$((now - last))
-        if ((dur >= 1 && dur < 864000)); then
-          mkdir -p "$STATEDIR"
-          chmod 700 "$STATEDIR" 2>/dev/null || true
-          printf '%s\t%s\t%s\t%s\n' "$last" "$now" "$ip" "$dur" >>"$SESSIONS_FILE"
-        fi
-      fi
-      active_last_seen["$key"]="$now"
+      accumulate_client_flow "$now" "$ip" "$sport" seen active_last_seen
     done < <(conntrack -L -p tcp -n 2>/dev/null || true)
+
+    if [[ -z "${MTPROXY_NO_SS:-}" ]]; then
+      while IFS=$'\t' read -r ip sport || [[ -n "$ip" ]]; do
+        [[ -n "$ip" ]] || continue
+        skip_src_container_or_internal "$ip" && continue
+        accumulate_client_flow "$now" "$ip" "$sport" seen active_last_seen
+      done < <(list_ss_established_peers_on_port "$proxy_port")
+    fi
 
     local -a _keys
     _keys=("${!active_last_seen[@]}")
@@ -394,6 +436,10 @@ diagnose_main() {
     if command -v ss >/dev/null 2>&1; then
       echo "Прослушивание порта ${proxy_port} (ss):"
       ss -tlnp 2>/dev/null | grep -E ":${proxy_port}\\s" || echo "  (нет LISTEN на :${proxy_port} в ss - проверьте Docker -p)"
+      lines="$(ss -tn state established 2>/dev/null | awk -v p=":${proxy_port}" '$1 ~ /^ESTAB/ && index($4,p)>0 {c++} END{print c+0}')"
+      echo "ESTAB к локальному *:${proxy_port} (ss, для docker-proxy): ${lines}"
+      echo "Пример (до 6 строк):"
+      ss -tn state established 2>/dev/null | awk -v p=":${proxy_port}" '$1 ~ /^ESTAB/ && index($4,p)>0 {print; if(++n>=6) exit}' || echo "  (пусто)"
     fi
     echo ""
     if [[ -f "$logf" ]]; then
@@ -405,7 +451,7 @@ diagnose_main() {
     echo ""
     echo "По умолчанию сборщик опрашивает conntrack -L (не -E); старый режим: MTPROXY_COLLECT_EVENTS=1."
     echo "Если сборщик падает: sudo $0 start  (после установки conntrack-tools)."
-    echo "Пустой отчёт: нет входящих сессий на порт ${proxy_port} после start (или только src 172.16-31 / 127.* - отфильтрованы)."
+    echo "Пустой отчёт: нет входящих сессий на порт ${proxy_port} после start, или conntrack показывает только исходящие из контейнера (тогда смотрите ss ESTAB выше; сборщик объединяет conntrack + ss)."
     echo "========"
   )
 }

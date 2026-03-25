@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Сбор статистики по TCP к порту прокси на хосте (conntrack).
 set -euo pipefail
+# nohup/cron часто дают урезанный PATH — conntrack обычно в /usr/sbin
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
 # Явный переопределение (например под sudo):
 #   MTPROXY_CONFIG_FILE=/home/user/mtproto_config.txt
@@ -24,12 +26,13 @@ PID_FILE="${STATEDIR}/collector.pid"
 usage() {
   echo "Использование: $0 {report|collect|start|stop|status|diagnose}"
   echo "  report    — таблица по IP"
-  echo "  collect   — слушать conntrack (foreground)"
+  echo "  collect   — сборщик (по умолчанию опрос conntrack -L; см. MTPROXY_COLLECT_EVENTS)"
   echo "  start     — фон, лог ${STATEDIR}/collector.log"
   echo "  stop      — остановить фоновый сборщик"
   echo "  status    — запущен ли сборщик"
   echo "  diagnose  — пути, порт, conntrack, подсказки (если нет данных)"
-  echo "Опционально: MTPROXY_CONFIG_FILE, MTPROXY_STATS_DIR (если пути не совпадают с HOME)."
+  echo "Опционально: MTPROXY_CONFIG_FILE, MTPROXY_STATS_DIR; MTPROXY_POLL_SEC (сек, по умолчанию 3);"
+  echo "  MTPROXY_COLLECT_EVENTS=1 — старый режим conntrack -E (с Docker часто пусто)."
   exit "${1:-0}"
 }
 
@@ -103,6 +106,61 @@ start_of_local_day() {
 
 declare -A G_PENDING_START
 
+# Первый «оригинальный» кортеж в строке conntrack -L (клиент → хост:порт прокси).
+# Пропускаем src=172.17.* (исходящий трафик из контейнера Docker на :443).
+parse_list_line_client() {
+  local line="$1" port="$2" lc
+  lc="${line,,}"
+  [[ "$lc" =~ src=([^[:space:]]+)[[:space:]]+dst=[^[:space:]]+[[:space:]]+sport=([0-9]+)[[:space:]]+dport=(${port})([^0-9]|$) ]] || return 1
+  local src sport
+  src="${BASH_REMATCH[1]}"
+  sport="${BASH_REMATCH[2]}"
+  [[ "$src" =~ ^172\.17\. ]] && return 1
+  printf '%s\t%s\n' "$src" "$sport"
+}
+
+# Опрос conntrack -L (стабильнее, чем -E, за NAT/Docker).
+collect_poll_loop() {
+  local proxy_port="$1"
+  local poll_sec now ts key ip sport st dur
+  poll_sec="${MTPROXY_POLL_SEC:-3}"
+  [[ "$poll_sec" =~ ^[0-9]+$ ]] && ((poll_sec >= 1 && poll_sec <= 300)) || poll_sec=3
+  declare -A active_start
+  echo "[stats-mtproxy] Опрос conntrack -L каждые ${poll_sec}s, порт ${proxy_port} (игнор src 172.17.*)." >&2
+  while true; do
+    now="$(now_epoch)"
+    declare -A seen=()
+    while IFS= read -r line || true; do
+      [[ -n "$line" ]] || continue
+      parsed="$(parse_list_line_client "$line" "$proxy_port" 2>/dev/null)" || continue
+      IFS=$'\t' read -r ip sport <<<"$parsed"
+      key="${ip}|${sport}"
+      seen["$key"]=1
+      if [[ -z "${active_start[$key]:-}" ]]; then
+        active_start["$key"]="$now"
+      fi
+    done < <(conntrack -L -p tcp -n 2>/dev/null || true)
+
+    local -a _keys
+    _keys=("${!active_start[@]}")
+    for key in "${_keys[@]}"; do
+      if [[ -z "${seen[$key]:-}" ]]; then
+        st="${active_start[$key]}"
+        ip="${key%%|*}"
+        sport="${key##*|}"
+        dur=$((now - st))
+        if ((dur >= 1 && dur < 864000)); then
+          mkdir -p "$STATEDIR"
+          chmod 700 "$STATEDIR" 2>/dev/null || true
+          printf '%s\t%s\t%s\t%s\n' "$st" "$now" "$ip" "$dur" >>"$SESSIONS_FILE"
+        fi
+        unset 'active_start[$key]'
+      fi
+    done
+    sleep "$poll_sec"
+  done
+}
+
 run_collect_pipe() {
   local proxy_port="$1"
   local line="$2"
@@ -146,15 +204,19 @@ collect_wrapper() {
     exit 1
   }
   echo "[stats-mtproxy] Порт хоста: ${proxy_port}. Пишем сессии в ${SESSIONS_FILE}" >&2
-  # Без подпроцесса в пайпе — иначе теряется G_PENDING_START; stderr conntrack не в pipe (видны ошибки прав)
-  if command -v stdbuf >/dev/null 2>&1; then
-    while IFS= read -r line; do
-      run_collect_pipe "$proxy_port" "$line"
-    done < <(stdbuf -oL conntrack -E -p tcp -o timestamp)
+  if [[ -n "${MTPROXY_COLLECT_EVENTS:-}" ]]; then
+    echo "[stats-mtproxy] Режим conntrack -E (экспериментально)." >&2
+    if command -v stdbuf >/dev/null 2>&1; then
+      while IFS= read -r line; do
+        run_collect_pipe "$proxy_port" "$line"
+      done < <(stdbuf -oL conntrack -E -p tcp -o timestamp)
+    else
+      while IFS= read -r line; do
+        run_collect_pipe "$proxy_port" "$line"
+      done < <(conntrack -E -p tcp -o timestamp)
+    fi
   else
-    while IFS= read -r line; do
-      run_collect_pipe "$proxy_port" "$line"
-    done < <(conntrack -E -p tcp -o timestamp)
+    collect_poll_loop "$proxy_port"
   fi
 }
 
@@ -181,8 +243,8 @@ start_background() {
     fi
     rm -f "$PID_FILE"
   fi
-  export SUDO_UID SUDO_USER 2>/dev/null || true
-  nohup bash "$self" collect >>"$logf" 2>&1 &
+  export SUDO_UID SUDO_USER PATH 2>/dev/null || true
+  nohup env PATH="$PATH" bash "$self" collect >>"$logf" 2>&1 &
   pid=$!
   echo "$pid" >"$PID_FILE"
   sleep 0.5
@@ -274,8 +336,9 @@ diagnose_main() {
       echo "Лог ${logf} ещё не создавался."
     fi
     echo ""
+    echo "Сборщик по умолчанию опрашивает conntrack -L (не -E); старый режим: MTPROXY_COLLECT_EVENTS=1."
     echo "Если сборщик падает: sudo $0 start  (после conntrack-tools)."
-    echo "Пустой отчёт при работающем сборщике: не было TCP-сессий на порт ${proxy_port} после start."
+    echo "Пустой отчёт: нет входящих сессий на порт ${proxy_port} после start (или только исход 172.17.* — они отфильтрованы)."
     echo "────────"
   )
 }

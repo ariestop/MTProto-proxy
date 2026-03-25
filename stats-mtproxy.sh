@@ -145,7 +145,8 @@ collect_poll_loop() {
   while true; do
     now="$(now_epoch)"
     declare -A seen=()
-    while IFS= read -r line || true; do
+    # Без «|| true» при EOF цикл не завершался (вечное вращение после conntrack -L).
+    while IFS= read -r line || [[ -n "$line" ]]; do
       [[ -n "$line" ]] || continue
       parsed="$(parse_list_line_client "$line" "$proxy_port" 2>/dev/null)" || continue
       IFS=$'\t' read -r ip sport <<<"$parsed"
@@ -377,6 +378,15 @@ report_main() {
   if [[ ! -s "$SESSIONS_FILE" ]]; then
     echo ""
     echo "В ${SESSIONS_FILE} пока нет данных."
+    local _rpid
+    if [[ -f "$PID_FILE" ]]; then
+      _rpid="$(cat "$PID_FILE" 2>/dev/null || true)"
+      if [[ -n "$_rpid" ]] && ! kill -0 "$_rpid" 2>/dev/null; then
+        echo "Сборщик упал: в ${PID_FILE} указан PID ${_rpid}, но процесс уже нет."
+        echo "См. лог: tail -50 ${STATEDIR}/collector.log"
+        echo "Очистите PID и перезапустите: sudo $0 stop 2>/dev/null; sudo $0 start"
+      fi
+    fi
     echo "Запустите сборщик (conntrack-tools) с теми же путями, что и для отчёта:"
     echo "  ./stats-mtproxy.sh start   или   sudo ./stats-mtproxy.sh start"
     echo "(под sudo данные пишутся в домашний каталог вызывавшего пользователя, если там есть ~/mtproto_config.txt)."

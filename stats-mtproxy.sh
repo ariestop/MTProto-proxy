@@ -40,6 +40,7 @@ usage() {
   echo "  MTPROXY_CONTAINER_NAME=mtproto-proxy - имя Docker-контейнера (по умолчанию mtproto-proxy)."
   echo "  MTPROXY_NO_DOCKER_SS=1 - не опрашивать ss внутри контейнера (docker exec)."
   echo "  MTPROXY_DOCKER_NO_SUDO=1 - вызывать docker без sudo (если ваш пользователь в группе docker)."
+  echo "  MTPROXY_DEBUG=1 - отладочные строки в collector.log (сколько матчей/записей за цикл)."
   echo ""
   echo "Сброс ${SESSIONS_FILE}:"
   echo "  $0 reset trim [ -y ]  - удалить только строки с Docker/127 IP (::ffff:172.16-31)"
@@ -272,18 +273,26 @@ collect_poll_loop() {
   while true; do
     now="$(now_epoch)"
     declare -A seen=()
+    local matched_ct=0 matched_ss=0 matched_dss=0 wrote_rows=0
+    local _before_size=0 _after_size=0
+    if [[ -n "${MTPROXY_DEBUG:-}" ]]; then
+      _before_size="$(wc -c <"$SESSIONS_FILE" 2>/dev/null || echo 0)"
+    fi
     # Без «|| true» при EOF цикл не завершался (вечное вращение после conntrack -L).
     while IFS= read -r line || [[ -n "$line" ]]; do
       [[ -n "$line" ]] || continue
       parsed="$(parse_list_line_client "$line" "$proxy_port" 2>/dev/null)" || continue
       IFS=$'\t' read -r ip sport <<<"$parsed"
+      ((matched_ct++)) || true
       key="${ip}|${sport}"
       seen["$key"]=1
       [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
       if [[ -n "${active_last_seen[$key]:-}" ]]; then
+        ((wrote_rows++)) || true
         append_session_row "${active_last_seen[$key]}" "$now" "$ip"
         active_last_seen["$key"]="$now"
       else
+        ((wrote_rows++)) || true
         append_session_row "$now" "$now" "$ip"
         active_last_seen["$key"]="$now"
       fi
@@ -293,13 +302,16 @@ collect_poll_loop() {
       while IFS=$'\t' read -r ip sport || [[ -n "$ip" ]]; do
         [[ -n "$ip" ]] || continue
         skip_src_container_or_internal "$ip" && continue
+        ((matched_ss++)) || true
         key="${ip}|${sport}"
         seen["$key"]=1
         [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
         if [[ -n "${active_last_seen[$key]:-}" ]]; then
+          ((wrote_rows++)) || true
           append_session_row "${active_last_seen[$key]}" "$now" "$ip"
           active_last_seen["$key"]="$now"
         else
+          ((wrote_rows++)) || true
           append_session_row "$now" "$now" "$ip"
           active_last_seen["$key"]="$now"
         fi
@@ -310,13 +322,16 @@ collect_poll_loop() {
       while IFS=$'\t' read -r ip sport || [[ -n "$ip" ]]; do
         [[ -n "$ip" ]] || continue
         skip_src_container_or_internal "$ip" && continue
+        ((matched_dss++)) || true
         key="${ip}|${sport}"
         seen["$key"]=1
         [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
         if [[ -n "${active_last_seen[$key]:-}" ]]; then
+          ((wrote_rows++)) || true
           append_session_row "${active_last_seen[$key]}" "$now" "$ip"
           active_last_seen["$key"]="$now"
         else
+          ((wrote_rows++)) || true
           append_session_row "$now" "$now" "$ip"
           active_last_seen["$key"]="$now"
         fi
@@ -331,12 +346,19 @@ collect_poll_loop() {
         # Если поток попал в один снимок и исчез, закроем его этим же now.
         if [[ -n "$st" ]]; then
           ip="${key%|*}"
+          ((wrote_rows++)) || true
           append_session_row "$st" "$now" "$ip"
         fi
         unset 'active_last_seen[$key]'
         unset 'active_first_seen[$key]'
       fi
     done
+
+    if [[ -n "${MTPROXY_DEBUG:-}" ]]; then
+      _after_size="$(wc -c <"$SESSIONS_FILE" 2>/dev/null || echo 0)"
+      echo "[stats-mtproxy][debug] poll=${poll_sec}s matched: ct=${matched_ct} ss=${matched_ss} docker-ss=${matched_dss}; writes=${wrote_rows}; sessions.tsv ${_before_size}->${_after_size} bytes" >&2
+    fi
+
     sleep "$poll_sec"
   done
 }

@@ -375,9 +375,9 @@ read_nft_client_traffic_totals() {
       for (ip in inb) seen[ip] = 1
       for (ip in outb) seen[ip] = 1
       for (ip in seen) {
-        in = inb[ip] + 0
-        out = outb[ip] + 0
-        print ip "\t" in "\t" out "\t" (in + out)
+        in_bytes = inb[ip] + 0
+        out_bytes = outb[ip] + 0
+        print ip "\t" in_bytes "\t" out_bytes "\t" (in_bytes + out_bytes)
       }
     }
   ' "$in_tmp" "$out_tmp"
@@ -757,8 +757,12 @@ report_main() {
   fi
 
   echo ""
-  echo "Статистика по IP (порт прокси на хосте: ${proxy_port})."
-  echo "=================================================================================="
+  local fmt_header fmt_row
+  fmt_header='%-16s %-16s %9s %9s %9s %9s %10s %10s %10s\n'
+  fmt_row='%-16s %-16s %9s %9s %9s %9s %10s %10s %10s\n'
+  echo "Статистика по IP (порт прокси на хосте: ${proxy_port})"
+  printf "$fmt_header" "IP" "Первое подключ." "Сегодня" "7 дней" "30 дней" "Всего" "IN" "OUT" "ALL"
+  printf '%s\n' "-----------------------------------------------------------------------------------------------------------"
 
   tmp="$(mktemp)" || exit 1
   traf_tmp="$(mktemp)" || exit 1
@@ -798,9 +802,6 @@ report_main() {
     traf_total["$tip"]="${tall:-0}"
   done <"$traf_tmp"
 
-  printf '%-42s %-20s %12s %12s %12s %12s %12s %12s %12s\n' \
-    "IP" "Первое подключение" "Сегодня" "7 дней" "30 дней" "Всего" "IN bytes" "OUT bytes" "ALL bytes"
-
   local ip fts t d7c d30c tot ds inb outb allb
   while IFS=$'\t' read -r ip fts t d7c d30c tot; do
     if ds="$(date -d "@${fts}" '+%Y-%m-%d %H:%M' 2>/dev/null)"; then
@@ -811,13 +812,13 @@ report_main() {
     inb="${traf_in[$ip]:-0}"
     outb="${traf_out[$ip]:-0}"
     allb="${traf_total[$ip]:-$((inb + outb))}"
-    printf '%-42s %-20s %12s %12s %12s %12s %12s %12s %12s\n' \
+    printf "$fmt_row" \
       "$ip" "$ds" "$(fmt_duration "$t")" "$(fmt_duration "$d7c")" "$(fmt_duration "$d30c")" "$(fmt_duration "$tot")" \
       "$(fmt_bytes_human "$inb")" "$(fmt_bytes_human "$outb")" "$(fmt_bytes_human "$allb")"
   done <"$tmp"
   rm -f "$tmp" "$traf_tmp"
 
-  echo "=================================================================================="
+  printf '%s\n' "-----------------------------------------------------------------------------------------------------------"
   if [[ -z "${MTPROXY_NO_NFT_TRAFFIC:-}" ]]; then
     echo "Трафик (IN/OUT/ALL) — накопительные nft-счётчики в netns контейнера (${NFT_TABLE}/${NFT_IN_SET},${NFT_OUT_SET})."
   fi

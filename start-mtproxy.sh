@@ -595,6 +595,7 @@ stats_submenu() {
   echo "2) Запустить сборщик в фоне (Linux, conntrack)"
   echo "3) Остановить сборщик"
   echo "4) Статус сборщика"
+  echo "5) Диагностика (пути, conntrack, лог)"
   echo "0) Назад в главное меню"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   read -r -p "Выбор: " sub
@@ -621,6 +622,9 @@ stats_submenu() {
       ;;
     4)
       [[ -f "$STATS_SCRIPT" ]] && bash "$STATS_SCRIPT" status || warn "Не найден ${STATS_SCRIPT}"
+      ;;
+    5)
+      [[ -f "$STATS_SCRIPT" ]] && bash "$STATS_SCRIPT" diagnose || warn "Не найден ${STATS_SCRIPT}"
       ;;
     0 | "") ;;
     *) warn "Неверный пункт" ;;

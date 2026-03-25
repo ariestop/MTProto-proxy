@@ -22,12 +22,13 @@ SESSIONS_FILE="${STATEDIR}/sessions.tsv"
 PID_FILE="${STATEDIR}/collector.pid"
 
 usage() {
-  echo "Использование: $0 {report|collect|start|stop|status}"
-  echo "  report  — таблица по IP"
-  echo "  collect — слушать conntrack (foreground)"
-  echo "  start   — фон, лог ${STATEDIR}/collector.log"
-  echo "  stop    — остановить фоновый сборщик"
-  echo "  status  — запущен ли сборщик"
+  echo "Использование: $0 {report|collect|start|stop|status|diagnose}"
+  echo "  report    — таблица по IP"
+  echo "  collect   — слушать conntrack (foreground)"
+  echo "  start     — фон, лог ${STATEDIR}/collector.log"
+  echo "  stop      — остановить фоновый сборщик"
+  echo "  status    — запущен ли сборщик"
+  echo "  diagnose  — пути, порт, conntrack, подсказки (если нет данных)"
   echo "Опционально: MTPROXY_CONFIG_FILE, MTPROXY_STATS_DIR (если пути не совпадают с HOME)."
   exit "${1:-0}"
 }
@@ -70,15 +71,20 @@ script_abspath() {
 
 parse_conntrack_line() {
   local line="$1"
-  local ev src sport dport
-  [[ "$line" =~ \[([A-Z]+)\] ]] || return 1
-  ev="${BASH_REMATCH[1]}"
-  [[ "$ev" == NEW || "$ev" == DESTROY ]] || return 1
-  [[ "$line" =~ src=([^[:space:]]+) ]] || return 1
+  local ev src sport dport lc
+  lc="${line,,}"
+  if [[ "$lc" =~ \[new\] ]]; then
+    ev=NEW
+  elif [[ "$lc" =~ \[destroy\] ]]; then
+    ev=DESTROY
+  else
+    return 1
+  fi
+  [[ "$lc" =~ src=([^[:space:]]+) ]] || return 1
   src="${BASH_REMATCH[1]}"
-  [[ "$line" =~ sport=([0-9]+) ]] || return 1
+  [[ "$lc" =~ sport=([0-9]+) ]] || return 1
   sport="${BASH_REMATCH[1]}"
-  [[ "$line" =~ dport=([0-9]+) ]] || return 1
+  [[ "$lc" =~ dport=([0-9]+) ]] || return 1
   dport="${BASH_REMATCH[1]}"
   printf '%s\t%s\t%s\t%s\n' "$ev" "$src" "$sport" "$dport"
 }
@@ -140,24 +146,32 @@ collect_wrapper() {
     exit 1
   }
   echo "[stats-mtproxy] Порт хоста: ${proxy_port}. Пишем сессии в ${SESSIONS_FILE}" >&2
-  # Без подпроцесса в пайпе — иначе теряется G_PENDING_START
+  # Без подпроцесса в пайпе — иначе теряется G_PENDING_START; stderr conntrack не в pipe (видны ошибки прав)
   if command -v stdbuf >/dev/null 2>&1; then
     while IFS= read -r line; do
       run_collect_pipe "$proxy_port" "$line"
-    done < <(stdbuf -oL conntrack -E -p tcp -o timestamp 2>/dev/null)
+    done < <(stdbuf -oL conntrack -E -p tcp -o timestamp)
   else
     while IFS= read -r line; do
       run_collect_pipe "$proxy_port" "$line"
-    done < <(conntrack -E -p tcp -o timestamp 2>/dev/null)
+    done < <(conntrack -E -p tcp -o timestamp)
   fi
 }
 
 start_background() {
-  local proxy_port logf self
+  local proxy_port logf self pid
   proxy_port="$(get_proxy_port)"
   ensure_statedir
   logf="${STATEDIR}/collector.log"
   self="$(script_abspath)"
+  command -v conntrack >/dev/null 2>&1 || {
+    echo "Установите conntrack (conntrack-tools), затем повторите start." >&2
+    exit 1
+  }
+  if ! conntrack -L >/dev/null 2>&1; then
+    echo "conntrack недоступен (нужны права root / netlink). Запустите: sudo $0 start" >&2
+    exit 1
+  fi
   if [[ -f "$PID_FILE" ]]; then
     local old
     old="$(cat "$PID_FILE" 2>/dev/null || true)"
@@ -167,9 +181,19 @@ start_background() {
     fi
     rm -f "$PID_FILE"
   fi
+  export SUDO_UID SUDO_USER 2>/dev/null || true
   nohup bash "$self" collect >>"$logf" 2>&1 &
-  echo $! >"$PID_FILE"
-  echo "Сборщик запущен, PID $(cat "$PID_FILE"), лог: $logf (порт ${proxy_port})"
+  pid=$!
+  echo "$pid" >"$PID_FILE"
+  sleep 0.5
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "Сборщик сразу завершился. Последние строки ${logf}:" >&2
+    tail -n 25 "$logf" 2>/dev/null || true
+    rm -f "$PID_FILE"
+    echo "Подсказка: sudo $0 diagnose" >&2
+    exit 1
+  fi
+  echo "Сборщик запущен, PID ${pid}, лог: $logf (порт ${proxy_port})"
 }
 
 stop_background() {
@@ -196,9 +220,64 @@ collector_status() {
       echo "Сборщик работает (PID $pid)"
       return 0
     fi
+    if [[ -n "$pid" ]]; then
+      echo "Сборщик не запущен (в ${PID_FILE} записан PID $pid — процесс завершился)."
+    fi
+  else
+    echo "Сборщик не запущен (нет ${PID_FILE})."
   fi
-  echo "Сборщик не запущен."
   return 1
+}
+
+diagnose_main() {
+  (
+    set +e
+    set +o pipefail
+    local proxy_port lines logf
+    require_config || exit 1
+    proxy_port="$(get_proxy_port)"
+    logf="${STATEDIR}/collector.log"
+    echo "──────── stats-mtproxy diagnose ────────"
+    echo "CONFIG_FILE=${CONFIG_FILE}"
+    echo "STATEDIR=${STATEDIR}"
+    echo "PORT из конфига (хост): ${proxy_port}"
+    if [[ -f "$SESSIONS_FILE" ]]; then
+      echo "sessions.tsv: ${SESSIONS_FILE} ($(wc -c <"$SESSIONS_FILE") байт)"
+    else
+      echo "sessions.tsv: файла ещё нет"
+    fi
+    echo "EUID=${EUID:-} SUDO_UID=${SUDO_UID:-}"
+    echo ""
+    if command -v conntrack >/dev/null 2>&1; then
+      if conntrack -L >/dev/null 2>&1; then
+        echo "conntrack -L: OK"
+        lines="$(conntrack -L -p tcp 2>/dev/null | grep "dport=${proxy_port}" | wc -l)"
+        echo "Записей conntrack с dport=${proxy_port} (сейчас): ${lines}"
+        echo "Пример (до 8 строк с этим dport):"
+        conntrack -L -p tcp 2>/dev/null | grep "dport=${proxy_port}" | head -8 || echo "  (пусто — нет активных TCP на этот порт или другое имя полей)"
+      else
+        echo "conntrack -L: отказ (нужен root). Запуск: sudo $0 diagnose"
+      fi
+    else
+      echo "conntrack: команда не найдена (apt install conntrack)"
+    fi
+    echo ""
+    if command -v ss >/dev/null 2>&1; then
+      echo "Прослушивание порта ${proxy_port} (ss):"
+      ss -tlnp 2>/dev/null | grep -E ":${proxy_port}\\s" || echo "  (нет LISTEN на :${proxy_port} в выводе ss — проверьте Docker -p)"
+    fi
+    echo ""
+    if [[ -f "$logf" ]]; then
+      echo "Хвост ${logf}:"
+      tail -n 20 "$logf"
+    else
+      echo "Лог ${logf} ещё не создавался."
+    fi
+    echo ""
+    echo "Если сборщик падает: sudo $0 start  (после conntrack-tools)."
+    echo "Пустой отчёт при работающем сборщике: не было TCP-сессий на порт ${proxy_port} после start."
+    echo "────────"
+  )
 }
 
 fmt_duration() {
@@ -226,6 +305,7 @@ report_main() {
     echo "  ./stats-mtproxy.sh start   или   sudo ./stats-mtproxy.sh start"
     echo "(под sudo данные пишутся в домашний каталог пользователя, если есть ~/mtproto_config.txt)."
     echo "Если ранее запускали только sudo без этого поведения — остановите старый процесс и запустите start заново."
+    echo "Диагностика: ./stats-mtproxy.sh diagnose   или   sudo ./stats-mtproxy.sh diagnose"
     collector_status || true
     echo ""
     return 0
@@ -286,6 +366,7 @@ case "$main_cmd" in
   start) start_background ;;
   stop) stop_background ;;
   status) collector_status ;;
+  diagnose) diagnose_main ;;
   -h | --help | help) usage 0 ;;
   *) usage 1 ;;
 esac

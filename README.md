@@ -134,6 +134,7 @@ chmod +x stats-mtproxy.sh
 ./stats-mtproxy.sh start    # фон, лог ~/.mtproxy_stats/collector.log
 ./stats-mtproxy.sh report   # таблица
 ./stats-mtproxy.sh stop
+./stats-mtproxy.sh diagnose # пути, conntrack, хвост лога (при сбоях — sudo ./stats-mtproxy.sh diagnose)
 ```
 
 То же из меню **`./start-mtproxy.sh`** → п. **9**.

@@ -23,6 +23,9 @@ fi
 
 SESSIONS_FILE="${STATEDIR}/sessions.tsv"
 PID_FILE="${STATEDIR}/collector.pid"
+NFT_TABLE="${MTPROXY_NFT_TABLE:-mtproxy_traffic}"
+NFT_IN_SET="${MTPROXY_NFT_IN_SET:-in_clients}"
+NFT_OUT_SET="${MTPROXY_NFT_OUT_SET:-out_clients}"
 
 usage() {
   echo "Использование: $0 {report|collect|start|stop|status|diagnose|reset}"
@@ -40,6 +43,7 @@ usage() {
   echo "  MTPROXY_CONTAINER_NAME=mtproto-proxy - имя Docker-контейнера (по умолчанию mtproto-proxy)."
   echo "  MTPROXY_NO_DOCKER_SS=1 - не опрашивать ss внутри контейнера (docker exec)."
   echo "  MTPROXY_DOCKER_NO_SUDO=1 - вызывать docker без sudo (если ваш пользователь в группе docker)."
+  echo "  MTPROXY_NO_NFT_TRAFFIC=1 - отключить счётчики трафика nft в netns контейнера."
   echo "  MTPROXY_DEBUG=1 - отладочные строки в collector.log (сколько матчей/записей за цикл)."
   echo ""
   echo "Сброс ${SESSIONS_FILE}:"
@@ -289,6 +293,98 @@ list_docker_ss_established_peers_on_port() {
   fi
 }
 
+docker_mtproxy() {
+  if [[ -n "${MTPROXY_DOCKER_NO_SUDO:-}" ]]; then
+    docker "$@"
+  else
+    sudo docker "$@"
+  fi
+}
+
+mtproxy_container_pid() {
+  local cname="${MTPROXY_CONTAINER_NAME:-mtproto-proxy}"
+  docker_mtproxy inspect -f '{{.State.Pid}}' "$cname" 2>/dev/null | tr -d '[:space:]'
+}
+
+nsenter_mtproxy_netns() {
+  local pid
+  pid="$(mtproxy_container_pid)"
+  [[ -n "$pid" && "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]] || return 1
+  command -v nsenter >/dev/null 2>&1 || return 1
+  nsenter -t "$pid" -n "$@" 2>/dev/null
+}
+
+ensure_nft_traffic_counters() {
+  local proxy_port="$1"
+  [[ -n "${MTPROXY_NO_NFT_TRAFFIC:-}" ]] && return 0
+  command -v nft >/dev/null 2>&1 || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  nsenter_mtproxy_netns true || return 0
+
+  nsenter_mtproxy_netns nft add table inet "$NFT_TABLE" >/dev/null 2>&1 || true
+  nsenter_mtproxy_netns nft "add set inet ${NFT_TABLE} ${NFT_IN_SET} { type ipv4_addr; flags dynamic,timeout; timeout 2h; counter; }" >/dev/null 2>&1 || true
+  nsenter_mtproxy_netns nft "add set inet ${NFT_TABLE} ${NFT_OUT_SET} { type ipv4_addr; flags dynamic,timeout; timeout 2h; counter; }" >/dev/null 2>&1 || true
+  nsenter_mtproxy_netns nft "add chain inet ${NFT_TABLE} input { type filter hook input priority 0; policy accept; }" >/dev/null 2>&1 || true
+  nsenter_mtproxy_netns nft "add chain inet ${NFT_TABLE} output { type filter hook output priority 0; policy accept; }" >/dev/null 2>&1 || true
+
+  if ! nsenter_mtproxy_netns nft list chain inet "$NFT_TABLE" input | grep -q "tcp dport ${proxy_port} add @${NFT_IN_SET}"; then
+    nsenter_mtproxy_netns nft "add rule inet ${NFT_TABLE} input tcp dport ${proxy_port} add @${NFT_IN_SET} { ip saddr timeout 2h }" >/dev/null 2>&1 || true
+  fi
+  if ! nsenter_mtproxy_netns nft list chain inet "$NFT_TABLE" output | grep -q "tcp sport ${proxy_port} add @${NFT_OUT_SET}"; then
+    nsenter_mtproxy_netns nft "add rule inet ${NFT_TABLE} output tcp sport ${proxy_port} add @${NFT_OUT_SET} { ip daddr timeout 2h }" >/dev/null 2>&1 || true
+  fi
+}
+
+read_nft_set_ip_bytes() {
+  local set_name="$1"
+  [[ -n "${MTPROXY_NO_NFT_TRAFFIC:-}" ]] && return 0
+  command -v nft >/dev/null 2>&1 || return 0
+  nsenter_mtproxy_netns nft list set inet "$NFT_TABLE" "$set_name" 2>/dev/null |
+    awk '
+      {
+        line = $0
+        while (match(line, /([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)[^,]*bytes[[:space:]]+([0-9]+)/, m)) {
+          print m[1] "\t" m[2]
+          line = substr(line, RSTART + RLENGTH)
+        }
+      }
+    '
+}
+
+read_nft_client_traffic_totals() {
+  local in_tmp out_tmp
+  in_tmp="$(mktemp)" || return 1
+  out_tmp="$(mktemp)" || {
+    rm -f "$in_tmp"
+    return 1
+  }
+  read_nft_set_ip_bytes "$NFT_IN_SET" >"$in_tmp" || true
+  read_nft_set_ip_bytes "$NFT_OUT_SET" >"$out_tmp" || true
+
+  awk -F'\t' '
+    FNR == NR {
+      ip = $1; b = $2 + 0
+      if (ip != "") inb[ip] += b
+      next
+    }
+    {
+      ip = $1; b = $2 + 0
+      if (ip != "") outb[ip] += b
+    }
+    END {
+      for (ip in inb) seen[ip] = 1
+      for (ip in outb) seen[ip] = 1
+      for (ip in seen) {
+        in = inb[ip] + 0
+        out = outb[ip] + 0
+        print ip "\t" in "\t" out "\t" (in + out)
+      }
+    }
+  ' "$in_tmp" "$out_tmp"
+
+  rm -f "$in_tmp" "$out_tmp"
+}
+
 append_session_row() {
   local st="$1" en="$2" ip="$3"
   # Для очень коротких потоков (попали в один снимок опроса) en может быть == st.
@@ -441,6 +537,7 @@ collect_wrapper() {
   local proxy_port line
   proxy_port="$(get_proxy_port)"
   ensure_statedir
+  ensure_nft_traffic_counters "$proxy_port" || true
   # Если сборщик завершится (ошибка, сигнал, OOM-kill и т.п.), запишем причину в лог.
   # Это особенно важно при запуске через start (nohup), где иначе видно только «процесс умер».
   _main_bashpid="${BASHPID:-}"
@@ -609,15 +706,33 @@ fmt_duration() {
   printf '%dh %dm' "$h" "$m"
 }
 
+fmt_bytes_human() {
+  local b="${1:-0}"
+  [[ "$b" =~ ^[0-9]+$ ]] || {
+    printf '%s' "-"
+    return 0
+  }
+  if ((b >= 1073741824)); then
+    awk -v x="$b" 'BEGIN {printf "%.2fGiB", x/1073741824}'
+  elif ((b >= 1048576)); then
+    awk -v x="$b" 'BEGIN {printf "%.1fMiB", x/1048576}'
+  elif ((b >= 1024)); then
+    awk -v x="$b" 'BEGIN {printf "%.1fKiB", x/1024}'
+  else
+    printf '%sB' "$b"
+  fi
+}
+
 report_main() {
   require_config
   ensure_statedir
-  local proxy_port now sod d7 d30 tmp
+  local proxy_port now sod d7 d30 tmp traf_tmp
   proxy_port="$(get_proxy_port)"
   now="$(now_epoch)"
   sod="$(start_of_local_day)"
   d7=$((now - 7 * 86400))
   d30=$((now - 30 * 86400))
+  ensure_nft_traffic_counters "$proxy_port" || true
 
   if [[ ! -s "$SESSIONS_FILE" ]]; then
     echo ""
@@ -646,6 +761,7 @@ report_main() {
   echo "=================================================================================="
 
   tmp="$(mktemp)" || exit 1
+  traf_tmp="$(mktemp)" || exit 1
   awk -v now="$now" -v sod="$sod" -v d7="$d7" -v d30="$d30" '
     function overlap(s, e, b0, b1, x, y) {
       if (e < b0 || s > b1) return 0
@@ -671,23 +787,40 @@ report_main() {
         print ip "\t" first[ip] "\t" today[ip] "\t" w7[ip] "\t" w30[ip] "\t" total[ip]
     }
   ' "$SESSIONS_FILE" | sort -t $'\t' -k1 >"$tmp"
+  read_nft_client_traffic_totals | sort -t $'\t' -k1 >"$traf_tmp" || true
 
-  printf '%-42s %-20s %12s %12s %12s %12s\n' \
-    "IP" "Первое подключение" "Сегодня" "7 дней" "30 дней" "Всего"
+  declare -A traf_in traf_out traf_total
+  local tip tin tout tall
+  while IFS=$'\t' read -r tip tin tout tall; do
+    [[ -n "$tip" ]] || continue
+    traf_in["$tip"]="${tin:-0}"
+    traf_out["$tip"]="${tout:-0}"
+    traf_total["$tip"]="${tall:-0}"
+  done <"$traf_tmp"
 
-  local ip fts t d7c d30c tot ds
+  printf '%-42s %-20s %12s %12s %12s %12s %12s %12s %12s\n' \
+    "IP" "Первое подключение" "Сегодня" "7 дней" "30 дней" "Всего" "IN bytes" "OUT bytes" "ALL bytes"
+
+  local ip fts t d7c d30c tot ds inb outb allb
   while IFS=$'\t' read -r ip fts t d7c d30c tot; do
     if ds="$(date -d "@${fts}" '+%Y-%m-%d %H:%M' 2>/dev/null)"; then
       :
     else
       ds="$fts"
     fi
-    printf '%-42s %-20s %12s %12s %12s %12s\n' \
-      "$ip" "$ds" "$(fmt_duration "$t")" "$(fmt_duration "$d7c")" "$(fmt_duration "$d30c")" "$(fmt_duration "$tot")"
+    inb="${traf_in[$ip]:-0}"
+    outb="${traf_out[$ip]:-0}"
+    allb="${traf_total[$ip]:-$((inb + outb))}"
+    printf '%-42s %-20s %12s %12s %12s %12s %12s %12s %12s\n' \
+      "$ip" "$ds" "$(fmt_duration "$t")" "$(fmt_duration "$d7c")" "$(fmt_duration "$d30c")" "$(fmt_duration "$tot")" \
+      "$(fmt_bytes_human "$inb")" "$(fmt_bytes_human "$outb")" "$(fmt_bytes_human "$allb")"
   done <"$tmp"
-  rm -f "$tmp"
+  rm -f "$tmp" "$traf_tmp"
 
   echo "=================================================================================="
+  if [[ -z "${MTPROXY_NO_NFT_TRAFFIC:-}" ]]; then
+    echo "Трафик (IN/OUT/ALL) — накопительные nft-счётчики в netns контейнера (${NFT_TABLE}/${NFT_IN_SET},${NFT_OUT_SET})."
+  fi
   collector_status || true
   echo ""
 }

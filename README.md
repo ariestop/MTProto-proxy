@@ -42,6 +42,7 @@ chmod +x install-mtproxy.sh
 ## Статистика абонентов (`stats-mtproxy.sh`)
 
 Скрипт `stats-mtproxy.sh` собирает длительности TCP‑сессий и строит отчёт по IP.
+Также в `report` выводятся накопительные байты `IN/OUT/ALL` по IP клиента (счётчики `nft` в сетевом namespace контейнера).
 
 Команды:
 
@@ -65,7 +66,10 @@ chmod +x install-mtproxy.sh
 - `MTPROXY_DOCKER_NO_SUDO=1` — вызывать `docker` без `sudo` (если настроены права).
 - `MTPROXY_NO_DOCKER_SS=1` — отключить опрос внутри контейнера.
 - `MTPROXY_NO_SS=1` — отключить `ss` на хосте (останется `conntrack` + docker‑источник).
+- `MTPROXY_NO_NFT_TRAFFIC=1` — отключить подсчёт байтов через `nft` в netns контейнера.
 - `MTPROXY_DEBUG=1` — отладочные счётчики в `collector.log` (сколько потоков найдено/записано за цикл).
+
+Для байтовых счётчиков нужны `nft` и `nsenter` на хосте, а запуск — с правами root (обычно `sudo`).
 
 Сброс статистики:
 

@@ -1,10 +1,19 @@
-# Версионирование проекта mtproxy — **1.2.13**
+# Версионирование проекта mtproxy — **1.2.14**
 
 Формат: [Semantic Versioning](https://semver.org/lang/ru/) (`MAJOR.MINOR.PATCH`).
 
 | | |
 |--|--|
-| **Версия** | **1.2.13** |
+| **Версия** | **1.2.14** |
+
+---
+
+## 1.2.14 — 2026-03-25
+
+### `stats-mtproxy.sh`
+
+- Добавлен сбор клиентов через `docker exec <container> ss ...`: при Docker NAT/порт-маппинге это надёжнее, чем пытаться восстановить клиентов по `conntrack` на хосте.
+- Новые опции: `MTPROXY_CONTAINER_NAME`, `MTPROXY_NO_DOCKER_SS`, `MTPROXY_DOCKER_NO_SUDO`.
 
 ---
 

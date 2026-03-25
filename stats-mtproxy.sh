@@ -37,6 +37,9 @@ usage() {
   echo "  MTPROXY_COLLECT_EVENTS=1 - старый режим conntrack -E (с Docker часто пусто)."
   echo "  MTPROXY_LOCAL_IPS=\"a b\" - явный список локальных IPv4 для conntrack."
   echo "  MTPROXY_NO_SS=1 - не опрашивать ss (только conntrack)."
+  echo "  MTPROXY_CONTAINER_NAME=mtproto-proxy - имя Docker-контейнера (по умолчанию mtproto-proxy)."
+  echo "  MTPROXY_NO_DOCKER_SS=1 - не опрашивать ss внутри контейнера (docker exec)."
+  echo "  MTPROXY_DOCKER_NO_SUDO=1 - вызывать docker без sudo (если ваш пользователь в группе docker)."
   echo ""
   echo "Сброс ${SESSIONS_FILE}:"
   echo "  $0 reset trim [ -y ]  - удалить только строки с Docker/127 IP (::ffff:172.16-31)"
@@ -208,6 +211,39 @@ list_ss_established_peers_on_port() {
   done < <(ss -tn state established 2>/dev/null | awk '$1 ~ /^ESTAB/ {print $4 "\t" $5}')
 }
 
+# Пиры ESTAB внутри контейнера MTProxy (обычно показывает реальный IP клиента без путаницы NAT на хосте).
+# Требует, чтобы контейнер был доступен как `docker exec <name> ...`.
+docker_exec_mtproxy() {
+  local cname="${MTPROXY_CONTAINER_NAME:-mtproto-proxy}"
+  if [[ -n "${MTPROXY_DOCKER_NO_SUDO:-}" ]]; then
+    docker exec "$cname" "$@" 2>/dev/null
+  else
+    sudo docker exec "$cname" "$@" 2>/dev/null
+  fi
+}
+
+list_docker_ss_established_peers_on_port() {
+  local port="$1"
+  [[ -n "$port" ]] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+
+  # Пытаемся ss внутри контейнера. Если ss нет — тихо выходим (fallback на conntrack/host ss).
+  docker_exec_mtproxy sh -lc 'command -v ss >/dev/null 2>&1' || return 0
+
+  docker_exec_mtproxy sh -lc "ss -tn state established 2>/dev/null | awk '\$1 ~ /^ESTAB/ {print \$4 \"\t\" \$5}'" |
+    awk -v p=":${port}" '
+      {
+        la=$1; pa=$2
+        if (index(la,p) == 0) next
+        # peer:port
+        ip=pa; sub(/:[0-9]+$/,"",ip)
+        sport=pa; sub(/^.*:/,"",sport)
+        if (ip=="" || sport=="") next
+        print ip "\t" sport
+      }
+    '
+}
+
 append_session_row() {
   local st="$1" en="$2" ip="$3"
   # Для очень коротких потоков (попали в один снимок опроса) en может быть == st.
@@ -232,7 +268,7 @@ collect_poll_loop() {
   declare -A active_first_seen
   declare -A active_last_seen
   load_local_ipv4s || true
-  echo "[stats-mtproxy] Опрос каждые ${poll_sec}с: conntrack -L + ss ESTAB на :${proxy_port} (локальные IP для ct: ${G_LOCAL_IPV4S[*]:-?}; без ss: MTPROXY_NO_SS=1)." >&2
+  echo "[stats-mtproxy] Опрос каждые ${poll_sec}с: conntrack -L + ss (host) + ss (docker exec) на :${proxy_port} (локальные IP для ct: ${G_LOCAL_IPV4S[*]:-?}; без ss: MTPROXY_NO_SS=1; без docker-ss: MTPROXY_NO_DOCKER_SS=1)." >&2
   while true; do
     now="$(now_epoch)"
     declare -A seen=()
@@ -256,6 +292,17 @@ collect_poll_loop() {
         [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
         active_last_seen["$key"]="$now"
       done < <(list_ss_established_peers_on_port "$proxy_port")
+    fi
+
+    if [[ -z "${MTPROXY_NO_DOCKER_SS:-}" ]]; then
+      while IFS=$'\t' read -r ip sport || [[ -n "$ip" ]]; do
+        [[ -n "$ip" ]] || continue
+        skip_src_container_or_internal "$ip" && continue
+        key="${ip}|${sport}"
+        seen["$key"]=1
+        [[ -n "${active_first_seen[$key]:-}" ]] || active_first_seen["$key"]="$now"
+        active_last_seen["$key"]="$now"
+      done < <(list_docker_ss_established_peers_on_port "$proxy_port")
     fi
 
     local -a _keys
@@ -450,6 +497,10 @@ diagnose_main() {
       echo "ESTAB к локальному *:${proxy_port} (ss, для docker-proxy): ${lines}"
       echo "Пример (до 6 строк):"
       ss -tn state established 2>/dev/null | awk -v p=":${proxy_port}" '$1 ~ /^ESTAB/ && index($4,p)>0 {print; if(++n>=6) exit}' || echo "  (пусто)"
+    fi
+    if command -v docker >/dev/null 2>&1; then
+      lines="$( { docker_exec_mtproxy sh -lc "ss -tn state established 2>/dev/null | awk '\\$1 ~ /^ESTAB/ {print \\$4}'" | grep -cE ":${proxy_port}$"; } 2>/dev/null || echo 0 )"
+      echo "ESTAB внутри контейнера к *:${proxy_port} (docker exec): ${lines}"
     fi
     echo ""
     if [[ -f "$logf" ]]; then

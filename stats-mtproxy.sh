@@ -210,6 +210,11 @@ list_ss_established_peers_on_port() {
 
 append_session_row() {
   local st="$1" en="$2" ip="$3"
+  # Для очень коротких потоков (попали в один снимок опроса) en может быть == st.
+  # Записываем минимум 1 секунду, чтобы такие сессии не терялись.
+  if ((en <= st)); then
+    en=$((st + 1))
+  fi
   local dur=$((en - st))
   if ((dur >= 1 && dur < 864000)); then
     mkdir -p "$STATEDIR"
